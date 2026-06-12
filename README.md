@@ -1,6 +1,8 @@
 # OpenClaw Usage Dashboard
 
-A lightweight, real-time web dashboard for [OpenClaw](https://openclaw.ai) that shows which AI model each session is using, along with token counts and estimated costs — broken down by provider, model, and channel.
+The 'Usage' nav in the default OpenClaw instance is ok.  I needed something to watch costs closer based on a specific model route design that I've been using.
+
+So here is a lightweight, real-time web dashboard for [OpenClaw](https://openclaw.ai) that shows which AI model each session is using, along with token counts and estimated costs — broken down by provider, model, and channel.
 
 No external dependencies. Pure Python stdlib backend, single-file HTML/JS frontend.
 
