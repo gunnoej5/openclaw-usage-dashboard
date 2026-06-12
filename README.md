@@ -5,7 +5,10 @@ A lightweight, real-time web dashboard for [OpenClaw](https://openclaw.ai) that 
 No external dependencies. Pure Python stdlib backend, single-file HTML/JS frontend.
 
 ![Dashboard screenshot](https://github.com/gunnoej5/openclaw-usage-dashboard/raw/main/screenshot.png)
-<!-- Replace with an actual screenshot once deployed -->
+
+### Model routing reference
+
+![Model routes](https://github.com/gunnoej5/openclaw-usage-dashboard/raw/main/model-routes.png)
 
 ---
 
