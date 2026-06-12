@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>OpenClaw Usage Dashboard</title>
+<style>
+  :root {
+    --bg:       #0d0d0f;
+    --bg2:      #13141a;
+    --bg3:      #1a1b24;
+    --border:   #2a2b38;
+    --accent:   #7c6af7;
+    --accent2:  #56cfb0;
+    --dim:      #6b7280;
+    --text:     #e2e4f0;
+    --text2:    #9ca3af;
+    --red:      #f87171;
+    --green:    #4ade80;
+    --yellow:   #facc15;
+    --orange:   #fb923c;
+    --blue:     #60a5fa;
+    --purple:   #c084fc;
+    --radius:   8px;
+    --mono:     'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.3px; }
+  header .logo { color: var(--accent); font-size: 18px; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); flex-shrink: 0;
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .live-dot.dead { background: var(--red); box-shadow: none; animation: none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* ── Time pills ── */
+  .time-pills { display: flex; gap: 4px; }
+  .time-pill {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 4px 11px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  .time-pill:hover { background: var(--bg2); color: var(--text); border-color: var(--accent); }
+  .time-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .spacer { flex: 1; }
+  #last-updated { color: var(--dim); font-size: 12px; font-family: var(--mono); }
+
+  main {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    grid-template-rows: 1fr;
+    flex: 1;
+    overflow: hidden;
+    gap: 0;
+  }
+
+  /* ── Sidebar stats ── */
+  #sidebar {
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .stat-group h3 {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 10px;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--text2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+  .stat-value { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; }
+  .stat-value.cost { color: var(--accent2); }
+  .stat-value.tokens { color: var(--blue); }
+  .stat-value.runs { color: var(--purple); }
+  .stat-bar-wrap { margin-top: 4px; }
+  .stat-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .stat-bar-label { color: var(--text2); font-size: 11px; min-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stat-bar { flex: 1; height: 4px; background: var(--bg3); border-radius: 2px; }
+  .stat-bar-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.4s; }
+  .stat-bar-val { font-family: var(--mono); font-size: 10px; color: var(--dim); min-width: 55px; text-align: right; }
+
+  /* ── Pie legend ── */
+  #provider-pie-legend { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
+  .pie-legend-row { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+  .pie-legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .pie-legend-label { color: var(--text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pie-legend-val { font-family: var(--mono); font-size: 11px; color: var(--text); }
+
+  .big-stat { text-align: center; padding: 12px; background: var(--bg3); border-radius: var(--radius); border: 1px solid var(--border); }
+  .big-stat .val { font-size: 22px; font-weight: 700; font-family: var(--mono); color: var(--accent2); }
+  .big-stat .lbl { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  .big-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+  /* ── Run table ── */
+  #run-pane {
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  #run-pane h2 { font-size: 13px; font-weight: 600; color: var(--text2); letter-spacing: 0.5px; }
+
+  .filters {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  }
+  .filters select, .filters input {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 10px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+  }
+  .filters select:focus, .filters input:focus { border-color: var(--accent); }
+  .filters input { min-width: 180px; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  thead { position: sticky; top: 0; background: var(--bg2); z-index: 1; }
+  th {
+    text-align: left;
+    padding: 8px 10px;
+    color: var(--dim);
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  th:hover { color: var(--text); }
+  th .sort-arrow { margin-left: 4px; opacity: 0.4; }
+  th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+  td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    color: var(--text);
+    white-space: nowrap;
+  }
+  tr:hover td { background: var(--bg2); }
+  tr.new-flash td { animation: flashrow 1.2s ease; }
+  @keyframes flashrow { 0%{background:rgba(124,106,247,0.25)} 100%{background:transparent} }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    font-family: sans-serif;
+  }
+  .badge.running  { background: rgba(250,204,21,0.15); color: var(--yellow); }
+  .badge.success  { background: rgba(74,222,128,0.12); color: var(--green); }
+  .badge.aborted  { background: rgba(248,113,113,0.12); color: var(--red); }
+  .badge.error    { background: rgba(248,113,113,0.12); color: var(--red); }
+  .badge.unknown  { background: rgba(107,114,128,0.15); color: var(--dim); }
+
+  .provider-tag {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: sans-serif;
+  }
+  .p-anthropic { background: rgba(251,146,60,0.15); color: var(--orange); }
+  .p-openai    { background: rgba(96,165,250,0.15);  color: var(--blue); }
+  .p-lmstudio  { background: rgba(192,132,252,0.15); color: var(--purple); }
+  .p-other     { background: rgba(107,114,128,0.15); color: var(--dim); }
+
+  .cost-cell { color: var(--accent2); }
+  .cost-zero { color: var(--dim); }
+  .tokens-cell { color: var(--blue); }
+  .dim-cell { color: var(--dim); }
+
+  .no-runs { text-align: center; color: var(--dim); padding: 40px; font-size: 13px; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+
+  /* Responsive collapse sidebar */
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    #sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 280px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="logo">⚡</span>
+    <h1>OpenClaw Usage</h1>
+    <div class="live-dot" id="live-dot" title="Live SSE connection"></div>
+    <span class="spacer"></span>
+    <div class="time-pills" id="time-pills">
+      <button class="time-pill active" data-window="all" onclick="setWindow('all')">All time</button>
+      <button class="time-pill" data-window="30d" onclick="setWindow('30d')">30 days</button>
+      <button class="time-pill" data-window="14d" onclick="setWindow('14d')">14 days</button>
+      <button class="time-pill" data-window="7d" onclick="setWindow('7d')">7 days</button>
+      <button class="time-pill" data-window="24h" onclick="setWindow('24h')">24 hours</button>
+    </div>
+    <span class="spacer"></span>
+    <span id="last-updated">—</span>
+  </header>
+  <main>
+    <aside id="sidebar">
+      <div class="stat-group">
+        <h3>Totals (loaded)</h3>
+        <div class="big-stats-grid">
+          <div class="big-stat"><div class="val" id="s-total-cost">$0.000</div><div class="lbl">Total Cost</div></div>
+          <div class="big-stat"><div class="val" id="s-total-runs">0</div><div class="lbl">Runs</div></div>
+          <div class="big-stat"><div class="val" id="s-total-tokens">0</div><div class="lbl">Input Tokens</div></div>
+          <div class="big-stat"><div class="val" id="s-total-output">0</div><div class="lbl">Output Tokens</div></div>
+        </div>
+      </div>
+
+      <div class="stat-group">
+        <h3>Sessions by Provider</h3>
+        <div id="provider-pie-wrap">
+          <svg id="provider-pie" viewBox="0 0 120 120" width="120" height="120" style="display:block;margin:0 auto 10px"></svg>
+          <div id="provider-pie-legend"></div>
+        </div>
+      </div>
+
+      <div class="stat-group">
+        <h3>Cost by Provider</h3>
+        <div id="by-provider"></div>
+      </div>
+
+      <div class="stat-group">
+        <h3>By Model</h3>
+        <div id="by-model"></div>
+      </div>
+
+      <div class="stat-group">
+        <h3>By Channel</h3>
+        <div id="by-channel"></div>
+      </div>
+
+      <div class="stat-group">
+        <h3>Token Breakdown</h3>
+        <div id="token-breakdown"></div>
+      </div>
+    </aside>
+
+    <div id="run-pane">
+      <div class="filters">
+        <input type="text" id="filter-search" placeholder="Search model / session / channel…" oninput="applyFilters()"/>
+        <select id="filter-provider" onchange="applyFilters()">
+          <option value="">All providers</option>
+        </select>
+        <select id="filter-status" onchange="applyFilters()">
+          <option value="">All statuses</option>
+          <option value="success">Success</option>
+          <option value="running">Running</option>
+          <option value="aborted">Aborted</option>
+        </select>
+        <select id="filter-channel" onchange="applyFilters()">
+          <option value="">All channels</option>
+        </select>
+        <span class="spacer"></span>
+        <span id="run-count" style="color:var(--dim);font-size:12px;font-family:var(--mono)"></span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sortBy('startedTs')" id="th-startedTs">Time <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('provider')" id="th-provider">Provider <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('modelId')" id="th-modelId">Model <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('channel')" id="th-channel">Channel <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('status')" id="th-status">Status <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('usage.input')" id="th-usage.input">Input <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('usage.output')" id="th-usage.output">Output <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('usage.cacheRead')" id="th-usage.cacheRead">Cache↓ <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('costUsd')" id="th-costUsd" class="sorted">Cost <span class="sort-arrow">↓</span></th>
+            <th onclick="sortBy('durationMs')" id="th-durationMs">Duration <span class="sort-arrow">↕</span></th>
+            <th>Session</th>
+          </tr>
+        </thead>
+        <tbody id="run-tbody"></tbody>
+      </table>
+      <div class="no-runs" id="no-runs" style="display:none">No runs loaded yet.</div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let allRuns    = [];
+let sortField  = 'startedTs';
+let sortAsc    = false;
+let timeWindow = 'all';
+
+function windowCutoff() {
+  const now = Date.now();
+  switch (timeWindow) {
+    case '30d': return now - 30 * 86400_000;
+    case '14d': return now - 14 * 86400_000;
+    case '7d':  return now -  7 * 86400_000;
+    case '24h': return now -     86400_000;
+    default:    return 0;
+  }
+}
+
+function setWindow(w) {
+  timeWindow = w;
+  document.querySelectorAll('.time-pill').forEach(b =>
+    b.classList.toggle('active', b.dataset.window === w)
+  );
+  renderTable();
+  renderSidebarFromRuns();
+}
+
+// ── SSE ───────────────────────────────────────────────────────────────────────
+function connectSSE() {
+  const dot = document.getElementById('live-dot');
+  const es = new EventSource('/events');
+  es.onopen = () => { dot.className = 'live-dot'; };
+  es.onerror = () => { dot.className = 'live-dot dead'; setTimeout(connectSSE, 5000); es.close(); };
+  es.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'runs') {
+        mergeRuns(msg.data, true);
+        refreshStats();
+      }
+    } catch {}
+  };
+}
+
+// ── Data ──────────────────────────────────────────────────────────────────────
+async function loadInitial() {
+  const resp = await fetch('/api/runs?limit=500');
+  allRuns = await resp.json();
+  renderSidebarFromRuns();
+  renderTable();
+  document.getElementById('last-updated').textContent = fmt_ts(new Date());
+}
+
+function refreshStats() {
+  renderSidebarFromRuns();
+}
+
+function mergeRuns(incoming, flash = false) {
+  const existingIds = new Set(incoming.map(r => r.runId));
+  allRuns = allRuns.filter(r => !existingIds.has(r.runId));
+  allRuns = [...incoming, ...allRuns];
+  allRuns.sort((a, b) => {
+    const av = getField(a, sortField) ?? '';
+    const bv = getField(b, sortField) ?? '';
+    if (av < bv) return sortAsc ? -1 : 1;
+    if (av > bv) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  renderTable(flash ? new Set(incoming.map(r => r.runId)) : null);
+  renderSidebarFromRuns();
+  document.getElementById('last-updated').textContent = fmt_ts(new Date());
+}
+
+// ── Filtering ─────────────────────────────────────────────────────────────────
+function applyFilters() { renderTable(); renderSidebarFromRuns(); }
+
+function windowedRuns() {
+  const cutoff = windowCutoff();
+  if (!cutoff) return allRuns;
+  return allRuns.filter(r => {
+    const ts = r.startedTs ? new Date(r.startedTs).getTime() : 0;
+    return ts >= cutoff;
+  });
+}
+
+function filteredRuns() {
+  const search   = document.getElementById('filter-search').value.toLowerCase();
+  const provider = document.getElementById('filter-provider').value;
+  const status   = document.getElementById('filter-status').value;
+  const channel  = document.getElementById('filter-channel').value;
+
+  return windowedRuns().filter(r => {
+    if (provider && r.provider !== provider) return false;
+    if (status   && r.status   !== status)   return false;
+    if (channel  && r.channel  !== channel)  return false;
+    if (search) {
+      const hay = [r.modelId, r.provider, r.channel, r.sessionKey, r.agentId, r.status].join(' ').toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+}
+
+// ── Sorting ───────────────────────────────────────────────────────────────────
+function getField(r, field) {
+  if (field.includes('.')) {
+    const parts = field.split('.');
+    let v = r;
+    for (const p of parts) v = v?.[p];
+    return v;
+  }
+  return r[field];
+}
+
+function sortBy(field) {
+  if (sortField === field) sortAsc = !sortAsc;
+  else { sortField = field; sortAsc = false; }
+
+  // Update header arrows
+  document.querySelectorAll('th').forEach(th => {
+    th.classList.remove('sorted');
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.textContent = '↕';
+  });
+  const th = document.getElementById('th-' + field);
+  if (th) {
+    th.classList.add('sorted');
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.textContent = sortAsc ? '↑' : '↓';
+  }
+
+  allRuns.sort((a, b) => {
+    const av = getField(a, field) ?? '';
+    const bv = getField(b, field) ?? '';
+    if (av < bv) return sortAsc ? -1 : 1;
+    if (av > bv) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  renderTable();
+}
+
+// ── Render: stats ─────────────────────────────────────────────────────────────
+function fmt_cost(v) {
+  if (!v) return '$0.000000';
+  if (v >= 0.01) return '$' + v.toFixed(4);
+  return '$' + v.toFixed(6);
+}
+function fmt_tokens(n) {
+  if (n === undefined || n === null) return '—';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+function fmt_ts(d) {
+  if (!d) return '—';
+  const dt = d instanceof Date ? d : new Date(d);
+  return dt.toLocaleTimeString();
+}
+function fmt_dur(ms) {
+  if (!ms) return '—';
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms/1000).toFixed(1) + 's';
+  return Math.floor(ms/60000) + 'm' + Math.floor((ms%60000)/1000) + 's';
+}
+
+function computeStats(runs) {
+  const byModel = {}, byProvider = {}, byChannel = {};
+  function acc(b, key, r) {
+    if (!key) return;
+    if (!b[key]) b[key] = { runs: 0, costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const e = b[key], u = r.usage || {};
+    e.runs++; e.costUsd += r.costUsd || 0;
+    e.input      += u.input      || 0;
+    e.output     += u.output     || 0;
+    e.cacheRead  += u.cacheRead  || 0;
+    e.cacheWrite += u.cacheWrite || 0;
+  }
+  let tc = 0, ti = 0, to = 0, tcr = 0, tcw = 0;
+  for (const r of runs) {
+    tc  += r.costUsd          || 0;
+    ti  += r.usage?.input     || 0;
+    to  += r.usage?.output    || 0;
+    tcr += r.usage?.cacheRead || 0;
+    tcw += r.usage?.cacheWrite|| 0;
+    acc(byModel,    r.modelId,  r);
+    acc(byProvider, r.provider, r);
+    acc(byChannel,  r.channel,  r);
+  }
+  const sd = b => Object.fromEntries(Object.entries(b).sort((a,b) => b[1].costUsd - a[1].costUsd));
+  return {
+    totalRuns: runs.length, totalCostUsd: tc,
+    totalTokens: { input: ti, output: to, cacheRead: tcr, cacheWrite: tcw },
+    byModel: sd(byModel), byProvider: sd(byProvider), byChannel: sd(byChannel),
+  };
+}
+
+function renderSidebarFromRuns() {
+  renderStats(computeStats(windowedRuns()));
+}
+
+function renderStats(stats) {
+  document.getElementById('s-total-cost').textContent    = fmt_cost(stats.totalCostUsd);
+  document.getElementById('s-total-runs').textContent    = stats.totalRuns;
+  document.getElementById('s-total-tokens').textContent  = fmt_tokens(stats.totalTokens?.input);
+  document.getElementById('s-total-output').textContent  = fmt_tokens(stats.totalTokens?.output);
+
+  renderProviderPie(stats.byProvider);
+  renderBarGroup('by-provider', stats.byProvider, fmt_cost,              r => r.costUsd);
+  renderBarGroup('by-model',    stats.byModel,    fmt_cost,              r => r.costUsd);
+  renderBarGroup('by-channel',  stats.byChannel,  v => v + ' runs',      r => r.runs);
+
+  // token breakdown
+  const tk = stats.totalTokens || {};
+  const td = document.getElementById('token-breakdown');
+  td.innerHTML = '';
+  const rows = [
+    ['Input',       tk.input,       '#60a5fa'],
+    ['Output',      tk.output,      '#7c6af7'],
+    ['Cache Read',  tk.cacheRead,   '#4ade80'],
+    ['Cache Write', tk.cacheWrite,  '#facc15'],
+  ];
+  const maxTk = Math.max(...rows.map(r => r[1] || 0), 1);
+  rows.forEach(([lbl, val, color]) => {
+    const pct = Math.round(((val||0) / maxTk) * 100);
+    td.innerHTML += `
+      <div class="stat-bar-row">
+        <div class="stat-bar-label">${lbl}</div>
+        <div class="stat-bar"><div class="stat-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+        <div class="stat-bar-val">${fmt_tokens(val||0)}</div>
+      </div>`;
+  });
+
+  // populate filter dropdowns from full allRuns so options don't vanish when window is narrow
+  const allStats = computeStats(allRuns);
+  populateSelect('filter-provider', Object.keys(allStats.byProvider));
+  populateSelect('filter-channel',  Object.keys(allStats.byChannel));
+}
+
+function renderBarGroup(containerId, bucket, fmtVal, valFn) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const entries = Object.entries(bucket || {});
+  if (!entries.length) { el.innerHTML = '<div class="dim-cell" style="font-size:11px;padding:4px">—</div>'; return; }
+  const maxVal = Math.max(...entries.map(([,v]) => valFn(v)), 1);
+  el.innerHTML = entries.map(([k, v]) => {
+    const pct = Math.round((valFn(v) / maxVal) * 100);
+    return `
+      <div class="stat-bar-row">
+        <div class="stat-bar-label" title="${k}">${k}</div>
+        <div class="stat-bar"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
+        <div class="stat-bar-val">${typeof fmtVal === 'function' ? fmtVal(valFn(v)) : fmtVal}</div>
+      </div>`;
+  }).join('');
+}
+
+function populateSelect(id, values) {
+  const sel = document.getElementById(id);
+  const current = sel.value;
+  const existing = new Set(Array.from(sel.options).map(o => o.value).filter(Boolean));
+  values.forEach(v => {
+    if (!existing.has(v)) {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = v;
+      sel.appendChild(opt);
+    }
+  });
+  sel.value = current;
+}
+
+// ── Render: table ─────────────────────────────────────────────────────────────
+function providerClass(p) {
+  if (!p) return 'p-other';
+  if (p.includes('anthropic')) return 'p-anthropic';
+  if (p.includes('openai'))    return 'p-openai';
+  if (p.includes('lmstudio'))  return 'p-lmstudio';
+  return 'p-other';
+}
+
+function statusBadge(s) {
+  const cls = ['success','running','aborted','error'].includes(s) ? s : 'unknown';
+  return `<span class="badge ${cls}">${s || '?'}</span>`;
+}
+
+function shortSession(key) {
+  if (!key) return '—';
+  // agent:main:subagent:UUID → subagent:…UUID(8)
+  const parts = key.split(':');
+  if (parts.length >= 3) {
+    const type = parts[2];
+    const id   = parts[3] ? parts[3].slice(-8) : '';
+    return `${type}:${id}`;
+  }
+  return key.slice(-16);
+}
+
+function renderTable(flashIds = null) {
+  const rows = filteredRuns();
+  const tbody = document.getElementById('run-tbody');
+  const noRuns = document.getElementById('no-runs');
+  document.getElementById('run-count').textContent = rows.length + ' runs';
+
+  if (!rows.length) {
+    tbody.innerHTML = '';
+    noRuns.style.display = 'block';
+    return;
+  }
+  noRuns.style.display = 'none';
+
+  tbody.innerHTML = rows.map(r => {
+    const flash = flashIds?.has(r.runId) ? 'new-flash' : '';
+    const u = r.usage || {};
+    const inp  = u.input  || 0;
+    const out  = u.output || 0;
+    const cr   = u.cacheRead || 0;
+    const cost = r.costUsd || 0;
+    const costCell = cost > 0
+      ? `<span class="cost-cell">${fmt_cost(cost)}</span>`
+      : `<span class="cost-zero">—</span>`;
+    const ts = r.startedTs ? new Date(r.startedTs).toLocaleTimeString() + ' ' +
+               new Date(r.startedTs).toLocaleDateString(undefined, {month:'short', day:'numeric'})
+             : '—';
+
+    return `<tr class="${flash}">
+      <td class="dim-cell">${ts}</td>
+      <td><span class="provider-tag ${providerClass(r.provider)}">${r.provider || '?'}</span></td>
+      <td>${r.modelId || '—'}</td>
+      <td class="dim-cell">${r.channel || '—'}</td>
+      <td>${statusBadge(r.status)}</td>
+      <td class="tokens-cell">${fmt_tokens(inp)}</td>
+      <td class="tokens-cell">${fmt_tokens(out)}</td>
+      <td class="dim-cell">${fmt_tokens(cr)}</td>
+      <td>${costCell}</td>
+      <td class="dim-cell">${fmt_dur(r.durationMs)}</td>
+      <td class="dim-cell" title="${r.sessionKey || ''}">${shortSession(r.sessionKey)}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Pie chart ──────────────────────────────────────────────────────────────────
+const PIE_COLORS = [
+  '#fb923c',
+  '#60a5fa',
+  '#c084fc',
+  '#4ade80',
+  '#56cfb0',
+  '#f472b6',
+  '#facc15',
+  '#7c6af7',
+];
+const PROVIDER_COLOR_MAP = {
+  anthropic: '#fb923c',
+  openai:    '#60a5fa',
+  lmstudio:  '#c084fc',
+};
+
+function providerColor(name, idx) {
+  return PROVIDER_COLOR_MAP[name] || PIE_COLORS[idx % PIE_COLORS.length];
+}
+
+function renderProviderPie(byProvider) {
+  const svg    = document.getElementById('provider-pie');
+  const legend = document.getElementById('provider-pie-legend');
+  if (!svg || !legend) return;
+
+  const entries = Object.entries(byProvider || {});
+  if (!entries.length) {
+    svg.innerHTML = '';
+    legend.innerHTML = '<div style="font-size:11px;color:var(--dim);padding:4px">—</div>';
+    return;
+  }
+
+  const total = entries.reduce((s, [, v]) => s + v.runs, 0);
+  if (!total) return;
+
+  const cx = 60, cy = 60, r = 52, gap = 0.02;
+  let startAngle = -Math.PI / 2;
+  let paths = '';
+
+  entries.forEach(([name, data], i) => {
+    const frac  = data.runs / total;
+    const sweep = frac * 2 * Math.PI - gap;
+    if (sweep <= 0) return;
+    const endAngle = startAngle + sweep;
+    const largeArc = sweep > Math.PI ? 1 : 0;
+    const x1 = cx + r * Math.cos(startAngle);
+    const y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle);
+    const y2 = cy + r * Math.sin(endAngle);
+    const color = providerColor(name, i);
+    paths += `<path d="M ${cx} ${cy} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z"
+      fill="${color}" opacity="0.9"><title>${name}: ${data.runs} runs (${Math.round(frac*100)}%)</title></path>`;
+    startAngle = endAngle + gap;
+  });
+
+  paths += `<circle cx="${cx}" cy="${cy}" r="28" fill="var(--bg2)"/>`;
+  paths += `<text x="${cx}" y="${cy - 6}" text-anchor="middle" dominant-baseline="middle"
+    font-size="13" font-weight="700" fill="var(--text)" font-family="monospace">${total}</text>
+  <text x="${cx}" y="${cy + 10}" text-anchor="middle" dominant-baseline="middle"
+    font-size="8" fill="var(--dim)" font-family="sans-serif" letter-spacing="0.8">RUNS</text>`;
+
+  svg.innerHTML = paths;
+
+  legend.innerHTML = entries.map(([name, data], i) => {
+    const color = providerColor(name, i);
+    const pct   = Math.round((data.runs / total) * 100);
+    return `<div class="pie-legend-row">
+      <div class="pie-legend-swatch" style="background:${color}"></div>
+      <div class="pie-legend-label" title="${name}">${name}</div>
+      <div class="pie-legend-val">${data.runs} <span style="color:var(--dim);font-size:10px">(${pct}%)</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadInitial();
+connectSSE();
+// Auto-refresh sidebar every 30s even without SSE push
+setInterval(() => renderSidebarFromRuns(), 30_000);
+</script>
+</body>
+</html>
