@@ -252,6 +252,14 @@ def parse_trajectory_file(path: str, pricing: dict) -> list[dict]:
 
 # ── State store ────────────────────────────────────────────────────────────────
 
+def _hottest_trajectory_file() -> str | None:
+    """Return the path of the most-recently-modified trajectory file, or None."""
+    files = glob.glob(SESSIONS_GLOB)
+    if not files:
+        return None
+    return max(files, key=lambda p: os.path.getmtime(p))
+
+
 class Store:
     MAX_RUNS = 2000
 
@@ -261,6 +269,8 @@ class Store:
         self.lock     = threading.Lock()
         self.sse_clients: list[queue.Queue] = []
         self._known_files: dict[str, int] = {}  # path → mtime
+        self._hot_file:    str | None = None    # always-reread active file
+        self.active_session_file: str | None = None  # basename exposed to UI
 
     def reload_pricing(self):
         self.pricing = load_pricing()
@@ -272,15 +282,28 @@ class Store:
             runs = parse_trajectory_file(path, self.pricing)
             all_runs.extend(runs)
         all_runs.sort(key=lambda r: r.get("startedTs") or "", reverse=True)
+        hot = _hottest_trajectory_file()
         with self.lock:
             self.runs = all_runs[:self.MAX_RUNS]
             self._known_files = {p: int(os.path.getmtime(p)) for p in glob.glob(SESSIONS_GLOB)}
+            self._hot_file = hot
+            self.active_session_file = os.path.basename(hot) if hot else None
 
     def poll_new(self):
-        """Called by background thread. Returns list of newly completed runs."""
+        """Called by background thread. Returns list of newly completed runs.
+
+        Strategy:
+        - Track mtime for all files; re-parse any that changed.
+        - Additionally, ALWAYS re-parse the hottest (most-recently-modified)
+          file on every poll cycle so in-flight sessions are reflected without
+          waiting for an mtime tick between two consecutive turns.
+        """
         self.reload_pricing()
         new_runs: list[dict] = []
         current_files = set(glob.glob(SESSIONS_GLOB))
+        hot = _hottest_trajectory_file()
+
+        # Files changed since last poll (mtime-based)
         changed: list[str] = []
         for path in current_files:
             try:
@@ -291,9 +314,18 @@ class Store:
                 changed.append(path)
                 self._known_files[path] = mtime
 
+        # Always include the hottest file so active sessions stream in real-time
+        if hot and hot not in changed:
+            changed.append(hot)
+
         for path in changed:
             runs = parse_trajectory_file(path, self.pricing)
             new_runs.extend(runs)
+
+        # Update hot-file tracking
+        with self.lock:
+            self._hot_file = hot
+            self.active_session_file = os.path.basename(hot) if hot else None
 
         if new_runs:
             new_runs.sort(key=lambda r: r.get("startedTs") or "", reverse=True)
@@ -323,6 +355,19 @@ class Store:
     def get_runs(self, limit: int = 200) -> list[dict]:
         with self.lock:
             return self.runs[:limit]
+
+    def get_status(self) -> dict:
+        """Return server health / active-session metadata for the UI banner."""
+        with self.lock:
+            hot = self.active_session_file
+        return {
+            "activeSessionFile": hot,
+            "pollIntervalMs": 5000,
+            "note": (
+                "Active session detected. Costs for the current open session are "
+                "re-read every 5 s and may lag by up to one turn."
+            ) if hot else None,
+        }
 
     def get_stats(self) -> dict:
         with self.lock:
@@ -449,6 +494,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/stats":
             self.send_json(STORE.get_stats())
+
+        elif path == "/api/status":
+            self.send_json(STORE.get_status())
 
         elif path == "/api/pricing":
             self.send_json(STORE.pricing)

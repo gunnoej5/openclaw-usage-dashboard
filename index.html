@@ -204,6 +204,32 @@
   .badge.success  { background: rgba(74,222,128,0.12); color: var(--green); }
   .badge.aborted  { background: rgba(248,113,113,0.12); color: var(--red); }
   .badge.error    { background: rgba(248,113,113,0.12); color: var(--red); }
+
+  /* Active-session banner */
+  #active-session-banner {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    background: rgba(124,106,247,0.10);
+    border: 1px solid rgba(124,106,247,0.30);
+    border-radius: 6px;
+    padding: 7px 14px;
+    margin: 0 0 12px 0;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  #active-session-banner.visible { display: flex; }
+  #active-session-banner .pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    animation: pulse-ring 1.4s ease infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse-ring {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.4; transform: scale(0.75); }
+  }
+  #active-session-banner strong { color: var(--text); font-weight: 600; }
   .badge.unknown  { background: rgba(107,114,128,0.15); color: var(--dim); }
 
   .provider-tag {
@@ -256,6 +282,10 @@
     <span class="spacer"></span>
     <span id="last-updated">—</span>
   </header>
+  <div id="active-session-banner">
+    <div class="pulse"></div>
+    <span><strong>Active session in progress</strong> — costs for the current open session are re-read every 5 s and may lag by up to one turn. Totals will update automatically.</span>
+  </div>
   <main>
     <aside id="sidebar">
       <div class="stat-group">
@@ -382,6 +412,21 @@ function connectSSE() {
   };
 }
 
+// ── Active-session banner ─────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const resp = await fetch('/api/status');
+    const s = await resp.json();
+    const banner = document.getElementById('active-session-banner');
+    if (s.activeSessionFile) {
+      banner.classList.add('visible');
+    } else {
+      banner.classList.remove('visible');
+    }
+  } catch {}
+}
+setInterval(pollStatus, 10_000);
+
 // ── Data ──────────────────────────────────────────────────────────────────────
 async function loadInitial() {
   const resp = await fetch('/api/runs?limit=500');
@@ -389,6 +434,7 @@ async function loadInitial() {
   renderSidebarFromRuns();
   renderTable();
   document.getElementById('last-updated').textContent = fmt_ts(new Date());
+  pollStatus();
 }
 
 function refreshStats() {
