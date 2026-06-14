@@ -28,9 +28,57 @@ PORT = int(os.environ.get("USAGE_DASHBOARD_PORT", "9393"))
 
 # ── Pricing table ──────────────────────────────────────────────────────────────
 
+# Fallback pricing ($/1M tokens) for models not present in local catalog.
+# Catalog entries take precedence when found.
+FALLBACK_PRICING: dict = {
+    "anthropic/claude-opus-4-7": {
+        "name": "Claude Opus 4.7", "provider": "anthropic", "modelId": "claude-opus-4-7",
+        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
+    },
+    "anthropic/claude-opus-4-6": {
+        "name": "Claude Opus 4.6", "provider": "anthropic", "modelId": "claude-opus-4-6",
+        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
+    },
+    "anthropic/claude-opus-4-5": {
+        "name": "Claude Opus 4.5", "provider": "anthropic", "modelId": "claude-opus-4-5",
+        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
+    },
+    "anthropic/claude-opus-4": {
+        "name": "Claude Opus 4", "provider": "anthropic", "modelId": "claude-opus-4",
+        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
+    },
+    "anthropic/claude-sonnet-4-6": {
+        "name": "Claude Sonnet 4.6", "provider": "anthropic", "modelId": "claude-sonnet-4-6",
+        "input": 3.0, "output": 15.0, "cacheRead": 0.30, "cacheWrite": 3.75,
+    },
+    "anthropic/claude-sonnet-4-5": {
+        "name": "Claude Sonnet 4.5", "provider": "anthropic", "modelId": "claude-sonnet-4-5",
+        "input": 3.0, "output": 15.0, "cacheRead": 0.30, "cacheWrite": 3.75,
+    },
+    "anthropic/claude-haiku-3-5": {
+        "name": "Claude Haiku 3.5", "provider": "anthropic", "modelId": "claude-haiku-3-5",
+        "input": 0.8, "output": 4.0, "cacheRead": 0.08, "cacheWrite": 1.0,
+    },
+    "openai/gpt-5.4": {
+        "name": "GPT-5.4", "provider": "openai", "modelId": "gpt-5.4",
+        "input": 10.0, "output": 40.0, "cacheRead": 2.50, "cacheWrite": 0.0,
+    },
+    "openai/gpt-5.4-mini": {
+        "name": "GPT-5.4 Mini", "provider": "openai", "modelId": "gpt-5.4-mini",
+        "input": 0.40, "output": 1.60, "cacheRead": 0.10, "cacheWrite": 0.0,
+    },
+    "openai/o4-mini": {
+        "name": "o4-mini", "provider": "openai", "modelId": "o4-mini",
+        "input": 1.10, "output": 4.40, "cacheRead": 0.275, "cacheWrite": 0.0,
+    },
+}
+
+
 def load_pricing() -> dict:
-    """Returns {provider/modelId: {input, output, cacheRead, cacheWrite}} in $/1M tokens."""
-    pricing: dict = {}
+    """Returns {provider/modelId: {input, output, cacheRead, cacheWrite}} in $/1M tokens.
+    Starts from FALLBACK_PRICING; catalog entries override fallbacks when present.
+    """
+    pricing: dict = dict(FALLBACK_PRICING)  # start with fallbacks
     for cat_path in glob.glob(CATALOG_GLOB):
         try:
             with open(cat_path) as f:
