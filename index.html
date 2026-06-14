@@ -205,6 +205,17 @@
   .badge.aborted  { background: rgba(248,113,113,0.12); color: var(--red); }
   .badge.error    { background: rgba(248,113,113,0.12); color: var(--red); }
 
+  /* Accuracy note */
+  .accuracy-note { border-top: 1px solid var(--border); margin-top: 4px; }
+  .accuracy-toggle { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+  .accuracy-toggle:hover { color: var(--accent); }
+  #accuracy-body { font-size: 11px; color: var(--dim); line-height: 1.5; margin-top: 6px; }
+  #accuracy-body p { margin: 0 0 6px 0; }
+  #accuracy-body ul { margin: 0 0 4px 0; padding-left: 16px; }
+  #accuracy-body li { margin-bottom: 4px; }
+  #accuracy-body strong { color: var(--text); }
+  #accuracy-body code { font-family: var(--mono); font-size: 10px; background: var(--bg3); padding: 1px 3px; border-radius: 3px; }
+
   /* Active-session banner */
   #active-session-banner {
     display: none;
@@ -325,6 +336,23 @@
         <h3>Token Breakdown</h3>
         <div id="token-breakdown"></div>
       </div>
+
+      <div class="stat-group accuracy-note">
+        <h3 class="accuracy-toggle" onclick="toggleAccuracy()" title="Click to expand">
+          <span>⚠ Cost Accuracy</span>
+          <span id="accuracy-chevron" style="font-size:10px;margin-left:4px">▶</span>
+        </h3>
+        <div id="accuracy-body" style="display:none">
+          <p>Figures here are <strong>estimates</strong> derived from local trajectory files and may be lower than your billing console. Known gap sources:</p>
+          <ul>
+            <li><strong>Crashed/killed sessions</strong> — if OpenClaw was force-killed mid-turn the API call was billed but <code>model.completed</code> never wrote to disk.</li>
+            <li><strong>Active session lag</strong> — the current open session flushes after each turn completes; the very latest turn may not appear yet.</li>
+            <li><strong>Multiple API keys</strong> — the console aggregates all keys on the workspace; this dashboard only sees calls made through the local OpenClaw process.</li>
+            <li><strong>Missing catalog pricing</strong> — models not in the local catalog default to the built-in fallback table; rates may differ slightly from Anthropic billing.</li>
+          </ul>
+          <p style="margin-top:6px">Typical observed gap: <strong>5–15%</strong> below console. Use the Anthropic console as the source of truth for billing.</p>
+        </div>
+      </div>
     </aside>
 
     <div id="run-pane">
@@ -410,6 +438,15 @@ function connectSSE() {
       }
     } catch {}
   };
+}
+
+// ── Accuracy note toggle
+function toggleAccuracy() {
+  const body = document.getElementById('accuracy-body');
+  const chevron = document.getElementById('accuracy-chevron');
+  const open = body.style.display === 'none';
+  body.style.display = open ? 'block' : 'none';
+  chevron.textContent = open ? '▼' : '▶';
 }
 
 // ── Active-session banner ─────────────────────────────────────────────────────
