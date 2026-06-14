@@ -205,6 +205,52 @@
   .badge.aborted  { background: rgba(248,113,113,0.12); color: var(--red); }
   .badge.error    { background: rgba(248,113,113,0.12); color: var(--red); }
 
+  /* Console truth tracker */
+  .console-truth-group input[type=number] {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 5px 8px;
+    border-radius: var(--radius);
+    width: 100%;
+    outline: none;
+    margin-top: 4px;
+  }
+  .console-truth-group input[type=number]:focus { border-color: var(--accent); }
+  .variance-row {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 10px; padding: 8px 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg3);
+  }
+  .variance-label { font-size: 11px; color: var(--dim); }
+  .variance-val {
+    font-family: var(--mono); font-size: 13px; font-weight: 700;
+    transition: color 0.3s;
+  }
+  .variance-val.ok     { color: var(--green); }
+  .variance-val.warn   { color: var(--yellow); }
+  .variance-val.alert  { color: var(--red); }
+  .variance-pct {
+    font-family: var(--mono); font-size: 11px; margin-left: 6px;
+    padding: 2px 6px; border-radius: 4px; font-weight: 600;
+  }
+  .variance-pct.ok   { background: rgba(74,222,128,0.12); color: var(--green); }
+  .variance-pct.warn { background: rgba(250,204,21,0.12); color: var(--yellow); }
+  .variance-pct.alert{ background: rgba(248,113,113,0.15); color: var(--red); }
+  .console-save-btn {
+    margin-top: 8px; width: 100%;
+    background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text2); font-size: 11px; padding: 5px;
+    border-radius: var(--radius); cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .console-save-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .console-save-btn.saved { border-color: var(--green); color: var(--green); }
+
   /* Accuracy note */
   .accuracy-note { border-top: 1px solid var(--border); margin-top: 4px; }
   .accuracy-toggle { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
@@ -337,6 +383,28 @@
         <div id="token-breakdown"></div>
       </div>
 
+      <div class="stat-group console-truth-group">
+        <h3>Console Source of Truth</h3>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px">Enter billing total from Anthropic/OpenAI console for the <strong style="color:var(--text)">current time window</strong> to track variance.</div>
+        <label style="font-size:11px;color:var(--dim)">Console total ($)</label>
+        <input type="number" id="console-input" min="0" step="0.01" placeholder="e.g. 81.86" oninput="updateVariance()"/>
+        <div id="variance-display" style="display:none">
+          <div class="variance-row">
+            <span class="variance-label">Dashboard estimate</span>
+            <span id="variance-dashboard" class="variance-val"></span>
+          </div>
+          <div class="variance-row" style="margin-top:6px">
+            <span class="variance-label">Gap (console − dashboard)</span>
+            <span id="variance-gap" class="variance-val">
+              <span id="variance-gap-abs"></span>
+              <span id="variance-gap-pct" class="variance-pct"></span>
+            </span>
+          </div>
+        </div>
+        <button class="console-save-btn" id="console-save-btn" onclick="saveConsoleTotal()">Save for this window</button>
+        <div id="console-saved-note" style="font-size:10px;color:var(--dim);margin-top:4px;min-height:14px"></div>
+      </div>
+
       <div class="stat-group accuracy-note">
         <h3 class="accuracy-toggle" onclick="toggleAccuracy()" title="Click to expand">
           <span>⚠ Cost Accuracy</span>
@@ -421,6 +489,7 @@ function setWindow(w) {
   );
   renderTable();
   renderSidebarFromRuns();
+  loadConsoleTotals();
 }
 
 // ── SSE ───────────────────────────────────────────────────────────────────────
@@ -449,6 +518,83 @@ function toggleAccuracy() {
   chevron.textContent = open ? '▼' : '▶';
 }
 
+// ── Console truth tracker
+let consoleTotals = {};  // { windowKey: amount }
+
+function consoleStorageKey() {
+  return 'oc-console-' + timeWindow;
+}
+
+function loadConsoleTotals() {
+  try {
+    const raw = localStorage.getItem('oc-console-totals');
+    if (raw) consoleTotals = JSON.parse(raw);
+  } catch {}
+  const saved = consoleTotals[timeWindow];
+  const input = document.getElementById('console-input');
+  if (saved !== undefined) {
+    input.value = saved;
+    updateVariance();
+  } else {
+    input.value = '';
+    document.getElementById('variance-display').style.display = 'none';
+  }
+}
+
+function saveConsoleTotal() {
+  const val = parseFloat(document.getElementById('console-input').value);
+  if (isNaN(val) || val < 0) return;
+  consoleTotals[timeWindow] = val;
+  try { localStorage.setItem('oc-console-totals', JSON.stringify(consoleTotals)); } catch {}
+  // Also POST to server so it survives a browser refresh on a different machine
+  fetch('/api/console', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ window: timeWindow, amount: val })
+  }).catch(() => {});
+  const btn = document.getElementById('console-save-btn');
+  const note = document.getElementById('console-saved-note');
+  btn.classList.add('saved');
+  btn.textContent = 'Saved ✓';
+  note.textContent = 'Saved ' + new Date().toLocaleTimeString();
+  setTimeout(() => { btn.classList.remove('saved'); btn.textContent = 'Save for this window'; }, 2000);
+  updateVariance();
+}
+
+function updateVariance() {
+  const consoleVal = parseFloat(document.getElementById('console-input').value);
+  const display = document.getElementById('variance-display');
+  if (isNaN(consoleVal) || consoleVal <= 0) { display.style.display = 'none'; return; }
+  display.style.display = 'block';
+
+  // Compute dashboard total for current window
+  const runs = windowedRuns();
+  const dashTotal = runs.reduce((s, r) => s + (r.costUsd || 0), 0);
+  const gap = consoleVal - dashTotal;
+  const pct = consoleVal > 0 ? (gap / consoleVal) * 100 : 0;
+  const absPct = Math.abs(pct);
+
+  const tier = absPct <= 5 ? 'ok' : absPct <= 15 ? 'warn' : 'alert';
+  const sign = gap >= 0 ? '+' : '';
+
+  document.getElementById('variance-dashboard').textContent = '$' + dashTotal.toFixed(4);
+  document.getElementById('variance-dashboard').className = 'variance-val ' + tier;
+  document.getElementById('variance-gap-abs').textContent = sign + '$' + gap.toFixed(2);
+  document.getElementById('variance-gap-pct').textContent = sign + pct.toFixed(1) + '%';
+  document.getElementById('variance-gap-pct').className = 'variance-pct ' + tier;
+  document.getElementById('variance-gap').className = 'variance-val ' + tier;
+}
+
+function loadConsoleFromServer() {
+  fetch('/api/console').then(r => r.json()).then(data => {
+    // Merge server-persisted values; localStorage takes precedence if more recent
+    for (const [k, v] of Object.entries(data)) {
+      if (consoleTotals[k] === undefined) consoleTotals[k] = v;
+    }
+    loadConsoleTotals();
+  }).catch(() => loadConsoleTotals());
+}
+
 // ── Active-session banner ─────────────────────────────────────────────────────
 async function pollStatus() {
   try {
@@ -472,6 +618,7 @@ async function loadInitial() {
   renderTable();
   document.getElementById('last-updated').textContent = fmt_ts(new Date());
   pollStatus();
+  loadConsoleFromServer();
 }
 
 function refreshStats() {
@@ -619,6 +766,7 @@ function computeStats(runs) {
 
 function renderSidebarFromRuns() {
   renderStats(computeStats(windowedRuns()));
+  updateVariance();
 }
 
 function renderStats(stats) {

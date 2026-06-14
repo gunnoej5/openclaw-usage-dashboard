@@ -434,6 +434,25 @@ class Store:
             pass
 
 
+# ── Console truth persistence ─────────────────────────────────────────────────
+
+CONSOLE_STATE_PATH = OPENCLAW_STATE / "usage-dashboard-console.json"
+
+def load_console_state() -> dict:
+    try:
+        with open(CONSOLE_STATE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_console_state(data: dict):
+    try:
+        with open(CONSOLE_STATE_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
 STORE = Store()
 
 
@@ -498,6 +517,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/status":
             self.send_json(STORE.get_status())
 
+        elif path == "/api/console":
+            self.send_json(load_console_state())
+
         elif path == "/api/pricing":
             self.send_json(STORE.pricing)
 
@@ -528,6 +550,29 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 STORE.unsubscribe(q)
 
+        else:
+            self.send_json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b"{}"
+        try:
+            data = json.loads(body)
+        except Exception:
+            self.send_json({"error": "bad json"}, 400)
+            return
+
+        if path == "/api/console":
+            window  = str(data.get("window", ""))[:20]
+            amount  = data.get("amount")
+            if not window or not isinstance(amount, (int, float)) or amount < 0:
+                self.send_json({"error": "invalid"}, 400)
+                return
+            state = load_console_state()
+            state[window] = round(float(amount), 4)
+            save_console_state(state)
+            self.send_json({"ok": True, "window": window, "amount": state[window]})
         else:
             self.send_json({"error": "not found"}, 404)
 
