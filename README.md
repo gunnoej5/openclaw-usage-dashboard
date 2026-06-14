@@ -1,8 +1,6 @@
 # OpenClaw Usage Dashboard
 
-The 'Usage' nav in the default OpenClaw instance is ok.  I needed something to watch costs closer based on a specific model route design that I've been using.
-
-So here is a lightweight, real-time web dashboard for [OpenClaw](https://openclaw.ai) that shows which AI model each session is using, along with token counts and estimated costs — broken down by provider, model, and channel.
+A lightweight, real-time cost-tracking dashboard for [OpenClaw](https://openclaw.ai). Reads local trajectory files, computes estimated costs per session, and lets you cross-reference against your billing console to monitor variance.
 
 No external dependencies. Pure Python stdlib backend, single-file HTML/JS frontend.
 
@@ -16,37 +14,59 @@ No external dependencies. Pure Python stdlib backend, single-file HTML/JS fronte
 
 ## Features
 
-- **Real-time updates** via Server-Sent Events — new runs appear instantly without a page refresh
-- **Time-window filter** — All time / 30 days / 14 days / 7 days / 24 hours, in the header bar
-- **Per-run table** — timestamp, provider, model, channel, status, input tokens, output tokens, cache tokens, estimated cost, duration
+- **Real-time updates** via Server-Sent Events — new runs stream in without a page refresh
+- **Active session tracking** — the hottest trajectory file is re-read every 5 s so in-flight session costs appear within one turn, with a pulsing banner when a session is open
+- **Time-window filter** — All time / 30 days / 14 days / 7 days / 24 hours
+- **Per-run table** — timestamp, provider, model, channel, status, input/output/cache tokens, estimated cost, duration
 - **Sidebar stats** — totals card, sessions-by-provider donut chart, cost-by-provider/model/channel bar charts, token breakdown
 - **Combinable filters** — time window + provider + status + channel + freetext search all stack
-- **Cost parity** — uses the same per-model pricing rates from OpenClaw's plugin catalogs that `/status` and `/usage cost` use
-- **Zero deps** — Python 3.8+ standard library only; no npm, no pip installs
+- **Console source-of-truth tracker** — enter your billing console total for any window; dashboard shows the gap in real time, color-coded green/yellow/red (≤5% / 5–15% / >15%)
+- **Fallback pricing table** — covers Opus 4, Sonnet 4, Haiku 3.5, GPT-5.4, GPT-5.4-mini, o4-mini out of the box; catalog entries override when present
+- **Accuracy disclaimer** — collapsible sidebar note explaining known gap sources so the numbers are always honest
+- **Zero deps** — Python 3.8+ stdlib only; no npm, no pip
 
 ---
 
 ## How it works
 
-OpenClaw writes a [trajectory JSONL](https://openclaw.ai) file for every session under:
+OpenClaw writes a trajectory JSONL file for every session under:
 
 ```
 ~/.openclaw/agents/*/sessions/*.trajectory.jsonl
 ```
 
-The dashboard server tails these files every 5 seconds, parses `session.started`, `model.completed`, and `session.ended` events, and computes costs from the model pricing catalogs at:
+The server parses `session.started`, `model.completed`, and `session.ended` events from these files, computes costs from model pricing, and pushes updates to browsers via SSE. The most-recently-modified file is always re-parsed on every poll cycle so active sessions stay current.
+
+Pricing comes from OpenClaw's plugin catalog files:
 
 ```
 ~/.openclaw/agents/*/agent/plugins/*/catalog.json
 ```
 
-A background thread polls for file changes and pushes new run records to connected browsers via SSE.
+If a model isn't in the catalog, a built-in fallback table is used.
+
+---
+
+## Cost accuracy
+
+Dashboard figures are **estimates** derived from local trajectory files. They will typically read **5–15% below** your billing console. Known gap sources:
+
+| Source | Recoverable? |
+|---|---|
+| **Crashed/killed sessions** — API call billed but `model.completed` never written to disk | ✗ No |
+| **Active session lag** — current open turn not yet flushed | ✓ Auto-updates every 5 s |
+| **Multiple API keys** — console aggregates all keys; dashboard sees one local process | ✗ No |
+| **Missing catalog pricing** — fallback table may differ slightly from Anthropic billing | ~ Mostly |
+
+Use the **Console Source of Truth** panel in the sidebar to enter your billing console total and track the variance live. Saved per time-window in `~/.openclaw/usage-dashboard-console.json`.
+
+**Observed real-world accuracy:** ~88% coverage on 7-day windows; gap closes further when accounting for a second API key not visible to the local process.
 
 ---
 
 ## Requirements
 
-- [OpenClaw](https://openclaw.ai) installed and have run at least one session
+- [OpenClaw](https://openclaw.ai) installed with at least one completed session
 - Python 3.8+
 - A modern browser
 
@@ -59,7 +79,7 @@ git clone https://github.com/gunnoej5/openclaw-usage-dashboard.git
 cd openclaw-usage-dashboard
 ```
 
-That's it. No pip install, no npm install.
+No pip install, no npm install.
 
 ---
 
@@ -69,7 +89,9 @@ That's it. No pip install, no npm install.
 python3 server.py
 ```
 
-Then open **http://127.0.0.1:9393/** in your browser.
+Open **http://127.0.0.1:9393/** in your browser.
+
+> **Note:** Initial load parses all trajectory files, including large ones. On a busy instance with multi-MB session files this can take 30–90 seconds before the first response. The server is ready when it starts responding to requests.
 
 ### Custom port
 
@@ -79,8 +101,6 @@ USAGE_DASHBOARD_PORT=9394 python3 server.py
 
 ### Custom OpenClaw state directory
 
-By default the server reads from `~/.openclaw`. Override with:
-
 ```bash
 OPENCLAW_STATE_DIR=/path/to/your/.openclaw python3 server.py
 ```
@@ -88,8 +108,6 @@ OPENCLAW_STATE_DIR=/path/to/your/.openclaw python3 server.py
 ---
 
 ## Auto-start with systemd (Linux)
-
-Save the service file:
 
 ```ini
 # ~/.config/systemd/user/openclaw-usage-dashboard.service
@@ -108,51 +126,64 @@ Environment=USAGE_DASHBOARD_PORT=9393
 WantedBy=default.target
 ```
 
-Enable and start:
-
 ```bash
 systemctl --user enable --now openclaw-usage-dashboard
 ```
 
 ---
 
+## Console source-of-truth tracker
+
+The sidebar includes a **Console Source of Truth** panel for cross-referencing against Anthropic/OpenAI billing:
+
+1. Select a time window (e.g. **7 days**)
+2. Open your Anthropic console, filter to the same window
+3. Enter the console total in the input field and click **Save**
+4. The variance display shows the gap — color-coded:
+   - 🟢 **≤5%** — normal noise (crashed sessions, minor rounding)
+   - 🟡 **5–15%** — expected if you have a second API key or occasional hard crashes
+   - 🔴 **>15%** — worth investigating (wrong window, missing key, systematic data loss)
+
+Values are persisted per-window in localStorage and synced to the server so they survive browser and server restarts.
+
+---
+
 ## API endpoints
 
-The server also exposes a small JSON API if you want to build on top of it:
-
-| Endpoint | Description |
-|---|---|
-| `GET /` | The dashboard HTML |
-| `GET /api/runs?limit=N` | Recent run records (default 200, max 500 loaded at startup) |
-| `GET /api/stats` | Aggregate stats: totals, by-model, by-provider, by-channel |
-| `GET /api/pricing` | Known model pricing entries from catalogs |
-| `GET /events` | SSE stream — pushes `{"type":"runs","data":[...]}` on changes |
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /` | GET | Dashboard HTML |
+| `GET /api/runs?limit=N` | GET | Recent run records (default 200) |
+| `GET /api/stats` | GET | Aggregate totals by model / provider / channel |
+| `GET /api/pricing` | GET | Effective model pricing table (catalog + fallbacks) |
+| `GET /api/status` | GET | Server health + active session file |
+| `GET /api/console` | GET | Saved console totals by window |
+| `POST /api/console` | POST | Save a console total `{"window":"7d","amount":94.82}` |
+| `GET /events` | GET | SSE stream — pushes `{"type":"runs","data":[...]}` on changes |
 
 ---
 
 ## Cost calculation
 
 ```
-cost = (input_tokens      × input_rate
-      + output_tokens     × output_rate
-      + cache_read_tokens × cache_read_rate
-      + cache_write_tokens× cache_write_rate) / 1_000_000
+cost = (input_tokens       × input_rate
+      + output_tokens      × output_rate
+      + cache_read_tokens  × cache_read_rate
+      + cache_write_tokens × cache_write_rate) / 1_000_000
 ```
 
-Rates (in USD per 1M tokens) come directly from OpenClaw's plugin catalog files, so they stay in sync with whatever OpenClaw has configured. Local/self-hosted models (e.g. LM Studio) show `$0.00`.
+Rates (USD per 1M tokens) are loaded from OpenClaw's plugin catalog, with a built-in fallback table for common models not yet in the catalog:
 
----
+| Model | Input | Output | Cache read | Cache write |
+|---|---|---|---|---|
+| claude-opus-4-7 | $5.00 | $25.00 | $0.50 | $6.25 |
+| claude-sonnet-4-6 | $3.00 | $15.00 | $0.30 | $3.75 |
+| claude-haiku-3-5 | $0.80 | $4.00 | $0.08 | $1.00 |
+| gpt-5.4 | $10.00 | $40.00 | $2.50 | — |
+| gpt-5.4-mini | $0.40 | $1.60 | $0.10 | — |
+| o4-mini | $1.10 | $4.40 | $0.275 | — |
 
-## Parity with OpenClaw native reporting
-
-| OpenClaw surface | Dashboard equivalent |
-|---|---|
-| `/status` per-reply cost estimate | Per-run `costUsd` column |
-| `/usage cost` aggregate | Sidebar "Totals" card |
-| `/usage full` per-reply token footer | Per-row input/output/cache/cost breakdown |
-| `openclaw status --usage` provider breakdown | "By Provider" bar group |
-| Prometheus `openclaw_model_cost_usd_total` | `byModel[*].costUsd` in `/api/stats` |
-| Prometheus `openclaw_model_tokens_total` | `byModel[*].{input,output,cacheRead,cacheWrite}` |
+Local/self-hosted models (LM Studio, etc.) show `$0.00`.
 
 ---
 
@@ -160,8 +191,8 @@ Rates (in USD per 1M tokens) come directly from OpenClaw's plugin catalog files,
 
 ```
 openclaw-usage-dashboard/
-├── server.py    # Python stdlib HTTP server + SSE + trajectory parser
-├── index.html   # Single-file frontend (vanilla JS, SVG pie chart, no frameworks)
+├── server.py    # Python stdlib HTTP + SSE + trajectory parser + console state
+├── index.html   # Single-file frontend (vanilla JS, SVG pie, no frameworks)
 ├── LICENSE      # MIT
 └── README.md
 ```
