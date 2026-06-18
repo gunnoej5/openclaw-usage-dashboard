@@ -86,7 +86,7 @@ No pip install, no npm install.
 ## Running
 
 ```bash
-python3 server.py
+./scripts/start-usage-dashboard.sh
 ```
 
 Open **http://127.0.0.1:9393/** in your browser.
@@ -96,39 +96,28 @@ Open **http://127.0.0.1:9393/** in your browser.
 ### Custom port
 
 ```bash
-USAGE_DASHBOARD_PORT=9394 python3 server.py
+USAGE_DASHBOARD_PORT=9394 ./scripts/start-usage-dashboard.sh
 ```
 
 ### Custom OpenClaw state directory
 
 ```bash
-OPENCLAW_STATE_DIR=/path/to/your/.openclaw python3 server.py
+OPENCLAW_STATE_DIR=/path/to/your/.openclaw ./scripts/start-usage-dashboard.sh
 ```
 
 ---
 
 ## Auto-start with systemd (Linux)
 
-```ini
-# ~/.config/systemd/user/openclaw-usage-dashboard.service
-[Unit]
-Description=OpenClaw Usage Dashboard
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /path/to/openclaw-usage-dashboard/server.py
-Restart=on-failure
-RestartSec=5
-Environment=USAGE_DASHBOARD_PORT=9393
-
-[Install]
-WantedBy=default.target
-```
-
 ```bash
-systemctl --user enable --now openclaw-usage-dashboard
+./scripts/install-systemd-user-service.sh
 ```
+
+This installs `~/.config/systemd/user/openclaw-usage-dashboard.service`,
+enables it, starts it immediately, and attempts to enable user lingering so it
+comes back after reboot without requiring an interactive login.
+
+Operational details live in [RUNBOOK.md](RUNBOOK.md).
 
 ---
 
@@ -191,9 +180,13 @@ Local/self-hosted models (LM Studio, etc.) show `$0.00`.
 
 ```
 openclaw-usage-dashboard/
-├── server.py    # Python stdlib HTTP + SSE + trajectory parser + console state
-├── index.html   # Single-file frontend (vanilla JS, SVG pie, no frameworks)
-├── LICENSE      # MIT
+├── server.py                              # Python stdlib HTTP + SSE + parser
+├── index.html                             # Single-file frontend
+├── RUNBOOK.md                             # Install, operations, troubleshooting
+├── scripts/
+│   ├── install-systemd-user-service.sh    # Installs/updates the user service
+│   └── start-usage-dashboard.sh           # Canonical startup wrapper
+├── LICENSE                                # MIT
 └── README.md
 ```
 

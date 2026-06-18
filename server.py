@@ -17,7 +17,7 @@ import time
 import threading
 import queue
 import pathlib
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
 OPENCLAW_STATE = pathlib.Path(os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw")))
@@ -588,7 +588,7 @@ if __name__ == "__main__":
     t = threading.Thread(target=background_poller, daemon=True)
     t.start()
 
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Dashboard → http://127.0.0.1:{PORT}/")
     try:
         server.serve_forever()
