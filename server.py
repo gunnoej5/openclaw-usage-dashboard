@@ -31,6 +31,10 @@ PORT = int(os.environ.get("USAGE_DASHBOARD_PORT", "9393"))
 # Fallback pricing ($/1M tokens) for models not present in local catalog.
 # Catalog entries take precedence when found.
 FALLBACK_PRICING: dict = {
+    "anthropic/claude-opus-4-8": {
+        "name": "Claude Opus 4.8", "provider": "anthropic", "modelId": "claude-opus-4-8",
+        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
+    },
     "anthropic/claude-opus-4-7": {
         "name": "Claude Opus 4.7", "provider": "anthropic", "modelId": "claude-opus-4-7",
         "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
@@ -50,6 +54,10 @@ FALLBACK_PRICING: dict = {
     "anthropic/claude-sonnet-4-6": {
         "name": "Claude Sonnet 4.6", "provider": "anthropic", "modelId": "claude-sonnet-4-6",
         "input": 3.0, "output": 15.0, "cacheRead": 0.30, "cacheWrite": 3.75,
+    },
+    "anthropic/claude-haiku-4-5": {
+        "name": "Claude Haiku 4.5", "provider": "anthropic", "modelId": "claude-haiku-4-5",
+        "input": 1.0, "output": 5.0, "cacheRead": 0.10, "cacheWrite": 1.25,
     },
     "anthropic/claude-sonnet-4-5": {
         "name": "Claude Sonnet 4.5", "provider": "anthropic", "modelId": "claude-sonnet-4-5",
@@ -86,7 +94,12 @@ def load_pricing() -> dict:
             for pname, pdata in data.get("providers", {}).items():
                 for m in pdata.get("models", []):
                     cost = m.get("cost")
-                    if cost:
+                    # Skip empty or all-zero catalog cost blocks so the
+                    # fallback table can supply real pricing. Some plugin
+                    # catalogs ship new models with a zeroed cost stub.
+                    if cost and any(
+                        cost.get(k) for k in ("input", "output", "cacheRead", "cacheWrite")
+                    ):
                         key = f"{pname}/{m['id']}"
                         pricing[key] = {
                             "name":       m.get("name", m["id"]),
