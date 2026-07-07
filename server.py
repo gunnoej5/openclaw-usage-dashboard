@@ -13,16 +13,20 @@ Serves:
 import json
 import os
 import glob
+import re
 import time
 import threading
 import queue
+import uuid
 import pathlib
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
-OPENCLAW_STATE = pathlib.Path(os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw")))
-SESSIONS_GLOB = str(OPENCLAW_STATE / "agents" / "*" / "sessions" / "*.trajectory.jsonl")
-CATALOG_GLOB  = str(OPENCLAW_STATE / "agents" / "*" / "agent" / "plugins" / "*" / "catalog.json")
+OPENCLAW_STATE  = pathlib.Path(os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw")))
+SESSIONS_GLOB   = str(OPENCLAW_STATE / "agents" / "*" / "sessions" / "*.trajectory.jsonl")
+CATALOG_GLOB    = str(OPENCLAW_STATE / "agents" / "*" / "agent" / "plugins" / "*" / "catalog.json")
+LMSTUDIO_LOGS   = str(pathlib.Path(os.environ.get("LMSTUDIO_LOGS", os.path.expanduser("~/.lmstudio/server-logs"))))
 
 PORT = int(os.environ.get("USAGE_DASHBOARD_PORT", "9393"))
 
@@ -283,6 +287,170 @@ def _hottest_trajectory_file() -> str | None:
     return max(files, key=lambda p: os.path.getmtime(p))
 
 
+# ── LM Studio log parser ──────────────────────────────────────────────────────
+#
+# Parses ~/.lmstudio/server-logs/YYYY-MM/YYYY-MM-DD.N.log files into the same
+# run-record shape as parse_trajectory_file(). Each completion is identified by:
+#   START : [TIMESTAMP][INFO][model/id] Running chat completion ...
+#   TIMING: print_timing ... prompt eval time = X ms / N tokens  (prompt tokens)
+#           print_timing ... eval time = X ms / N tokens          (completion tokens)
+#   END   : [TIMESTAMP][INFO][model/id] Finished streaming response
+#
+# Token counts come from the last print_timing block before the Finished line
+# (LM Studio may emit incremental n_decoded lines; final one has full eval time).
+
+_LMS_TS_RE      = re.compile(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]')
+_LMS_START_RE   = re.compile(r'\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\[INFO\]\[([^\]]+)\] Running chat completion')
+_LMS_FINISH_RE  = re.compile(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\[INFO\]\[([^\]]+)\] Finished streaming response')
+_LMS_PROMPT_RE  = re.compile(r'prompt eval time\s*=\s*[\d.]+\s*ms\s*/\s*(\d+)\s*tokens')
+_LMS_EVAL_RE    = re.compile(r'(?<!prompt )eval time\s*=\s*[\d.]+\s*ms\s*/\s*(\d+)\s*tokens')
+
+
+def _lmstudio_log_files() -> list[str]:
+    """Return all LM Studio server log files, newest first."""
+    pattern = os.path.join(LMSTUDIO_LOGS, "**", "*.log")
+    files = glob.glob(pattern, recursive=True)
+    return sorted(files, key=os.path.getmtime, reverse=True)
+
+
+def parse_lmstudio_logs(pricing: dict, since_ts: str | None = None) -> list[dict]:
+    """
+    Parse LM Studio server logs into run records.
+    If since_ts (ISO string) is provided, skip runs that ended before it.
+    Returns list of dicts in the same shape as RunRecord.to_dict().
+    """
+    runs: list[dict] = []
+    since_dt = None
+    if since_ts:
+        try:
+            since_dt = datetime.fromisoformat(since_ts.replace("Z", "+00:00"))
+        except Exception:
+            pass
+
+    for log_path in _lmstudio_log_files():
+        file_runs = _parse_lmstudio_log_file(log_path, pricing, since_dt)
+        runs.extend(file_runs)
+        # If the oldest run in this file is older than since_dt, we can stop
+        if since_dt and file_runs:
+            oldest = min(r["startedTs"] or "" for r in file_runs)
+            if oldest and oldest < since_ts:
+                break
+
+    return runs
+
+
+def _parse_lmstudio_log_file(
+    path: str, pricing: dict, since_dt: datetime | None
+) -> list[dict]:
+    runs: list[dict] = []
+    # State for current in-progress run
+    cur_model:   str | None = None
+    cur_start:   str | None = None      # ISO timestamp
+    cur_prompt:  int = 0
+    cur_eval:    int = 0
+    # Incremental timing buffers (we take the last pair before Finished)
+    last_prompt: int = 0
+    last_eval:   int = 0
+
+    try:
+        with open(path, errors="replace") as f:
+            lines = f.readlines()
+    except Exception:
+        return runs
+
+    for line in lines:
+        # START
+        m = _LMS_START_RE.match(line)
+        if m:
+            cur_model  = m.group(1)
+            ts_m = _LMS_TS_RE.match(line)
+            cur_start  = _lms_ts_to_iso(ts_m.group(1)) if ts_m else None
+            last_prompt = 0
+            last_eval   = 0
+            continue
+
+        if cur_model is None:
+            continue
+
+        # TIMING lines (accumulate; keep last complete pair)
+        pm = _LMS_PROMPT_RE.search(line)
+        if pm:
+            last_prompt = int(pm.group(1))
+        em = _LMS_EVAL_RE.search(line)
+        if em:
+            last_eval = int(em.group(1))
+
+        # FINISH
+        fm = _LMS_FINISH_RE.match(line)
+        if fm:
+            end_ts    = _lms_ts_to_iso(fm.group(1))
+            model_id  = fm.group(2)   # e.g. "qwen/qwen3-4b"
+            provider  = "lmstudio"
+            pk        = f"{provider}/{model_id}"
+            usage     = {"input": last_prompt, "output": last_eval}
+            pe        = pricing.get(pk)
+            cost      = estimate_cost(usage, pe)  # $0 for local, but tracks tokens
+
+            # duration
+            dur_ms = None
+            if cur_start and end_ts:
+                try:
+                    s = datetime.fromisoformat(cur_start)
+                    e = datetime.fromisoformat(end_ts)
+                    dur_ms = int((e - s).total_seconds() * 1000)
+                except Exception:
+                    pass
+
+            # skip if older than since_dt
+            if since_dt and end_ts:
+                try:
+                    end_dt = datetime.fromisoformat(end_ts)
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                    if end_dt < since_dt:
+                        cur_model = None
+                        continue
+                except Exception:
+                    pass
+
+            runs.append({
+                "runId":      f"lms-{uuid.uuid5(uuid.NAMESPACE_URL, f'{cur_start or end_ts}/{model_id}/{last_prompt}/{last_eval}')}",
+                "sessionId":  None,
+                "sessionKey": None,
+                "provider":   provider,
+                "modelId":    model_id,
+                "modelApi":   None,
+                "channel":    "lmstudio-local",
+                "agentId":    None,
+                "trigger":    "lmstudio",
+                "startedTs":  cur_start,
+                "endedTs":    end_ts,
+                "status":     "success",
+                "usage":      usage,
+                "costUsd":    round(cost, 8),
+                "durationMs": dur_ms,
+                "aborted":    False,
+                "timedOut":   False,
+            })
+            cur_model  = None
+            cur_start  = None
+            last_prompt = 0
+            last_eval   = 0
+
+    return runs
+
+
+def _lms_ts_to_iso(ts: str) -> str:
+    """Convert '2026-07-07 17:47:07' to ISO-8601 UTC string."""
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+    except Exception:
+        return ts
+
+
+# ── Store ──────────────────────────────────────────────────────────────────────
+
 class Store:
     MAX_RUNS = 2000
 
@@ -304,11 +472,15 @@ class Store:
         for path in glob.glob(SESSIONS_GLOB):
             runs = parse_trajectory_file(path, self.pricing)
             all_runs.extend(runs)
+        # Merge LM Studio local runs
+        lms_runs = parse_lmstudio_logs(self.pricing)
+        all_runs.extend(lms_runs)
         all_runs.sort(key=lambda r: r.get("startedTs") or "", reverse=True)
         hot = _hottest_trajectory_file()
         with self.lock:
             self.runs = all_runs[:self.MAX_RUNS]
             self._known_files = {p: int(os.path.getmtime(p)) for p in glob.glob(SESSIONS_GLOB)}
+            self._lms_log_mtimes = {p: int(os.path.getmtime(p)) for p in _lmstudio_log_files()}
             self._hot_file = hot
             self.active_session_file = os.path.basename(hot) if hot else None
 
@@ -344,6 +516,25 @@ class Store:
         for path in changed:
             runs = parse_trajectory_file(path, self.pricing)
             new_runs.extend(runs)
+
+        # Poll LM Studio logs for new completions
+        lms_files = _lmstudio_log_files()
+        lms_changed = []
+        for path in lms_files:
+            try:
+                mtime = int(os.path.getmtime(path))
+            except Exception:
+                continue
+            if getattr(self, '_lms_log_mtimes', {}).get(path, 0) != mtime:
+                lms_changed.append(path)
+                self._lms_log_mtimes = getattr(self, '_lms_log_mtimes', {})
+                self._lms_log_mtimes[path] = mtime
+        # Always re-parse the hottest LM Studio log (active completions)
+        if lms_files and lms_files[0] not in lms_changed:
+            lms_changed.append(lms_files[0])
+        for path in lms_changed:
+            lms_runs = _parse_lmstudio_log_file(path, self.pricing, since_dt=None)
+            new_runs.extend(lms_runs)
 
         # Update hot-file tracking
         with self.lock:
