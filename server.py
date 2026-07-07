@@ -67,6 +67,10 @@ FALLBACK_PRICING: dict = {
         "name": "Claude Haiku 3.5", "provider": "anthropic", "modelId": "claude-haiku-3-5",
         "input": 0.8, "output": 4.0, "cacheRead": 0.08, "cacheWrite": 1.0,
     },
+    "openai/gpt-5.5": {
+        "name": "GPT-5.5", "provider": "openai", "modelId": "gpt-5.5",
+        "input": 7.0, "output": 21.0, "cacheRead": 1.75, "cacheWrite": 0.0,
+    },
     "openai/gpt-5.4": {
         "name": "GPT-5.4", "provider": "openai", "modelId": "gpt-5.4",
         "input": 10.0, "output": 40.0, "cacheRead": 2.50, "cacheWrite": 0.0,
@@ -79,6 +83,12 @@ FALLBACK_PRICING: dict = {
         "name": "o4-mini", "provider": "openai", "modelId": "o4-mini",
         "input": 1.10, "output": 4.40, "cacheRead": 0.275, "cacheWrite": 0.0,
     },
+    # Local LM Studio models — $0 cost, shown for token-count visibility
+    "lmstudio/qwen/qwen3-4b":                      {"name": "Qwen3-4B (nano)",              "provider": "lmstudio", "modelId": "qwen/qwen3-4b",                                             "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
+    "lmstudio/google/gemma-4-e4b":                 {"name": "Gemma-4 E4B (gemma)",          "provider": "lmstudio", "modelId": "google/gemma-4-e4b",                                        "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
+    "lmstudio/qwen/qwen3-14b":                     {"name": "Qwen3-14B (local)",             "provider": "lmstudio", "modelId": "qwen/qwen3-14b",                                            "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
+    "lmstudio/deepseek/deepseek-r1-0528-qwen3-8b": {"name": "DeepSeek-R1 Qwen3-8B (qwen)", "provider": "lmstudio", "modelId": "deepseek/deepseek-r1-0528-qwen3-8b",                         "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
+    "lmstudio/lmstudio-community/qwen3-coder-30b-a3b-instruct-gguf": {"name": "Qwen3-Coder-30B-A3B (coder)", "provider": "lmstudio", "modelId": "lmstudio-community/qwen3-coder-30b-a3b-instruct-gguf", "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
 }
 
 
