@@ -129,10 +129,11 @@ loginctl enable-linger "${USER}"
 
 ### No runs appear
 
-Check that OpenClaw has written trajectory files under:
+Check that OpenClaw has written trajectory rows into the per-agent SQLite
+stores:
 
 ```text
-~/.openclaw/agents/*/sessions/*.trajectory.jsonl
+~/.openclaw/agents/*/agent/openclaw-agent.sqlite
 ```
 
 If your state directory lives elsewhere, reinstall the unit with:

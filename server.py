@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 OpenClaw Usage Dashboard — backend server
-Reads trajectory JSONL files from ~/.openclaw/agents/*/sessions/
+Reads trajectory events from the per-agent SQLite store in
+~/.openclaw/agents/*/agent/openclaw-agent.sqlite
 Serves:
   GET /         → HTML dashboard
   GET /api/runs → recent run records (JSON)
@@ -15,6 +16,9 @@ import os
 import glob
 import re
 import time
+import shutil
+import sqlite3
+import tempfile
 import threading
 import queue
 import uuid
@@ -23,8 +27,12 @@ from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
+from pricing import MODEL_PRICING
+
 OPENCLAW_STATE  = pathlib.Path(os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw")))
-SESSIONS_GLOB   = str(OPENCLAW_STATE / "agents" / "*" / "sessions" / "*.trajectory.jsonl")
+# OpenClaw 2026.8.x moved runtime trajectory capture out of per-session JSONL
+# sidecars and into the per-agent SQLite database.
+AGENT_DB_GLOB   = str(OPENCLAW_STATE / "agents" / "*" / "agent" / "openclaw-agent.sqlite")
 CATALOG_GLOB    = str(OPENCLAW_STATE / "agents" / "*" / "agent" / "plugins" / "*" / "catalog.json")
 LMSTUDIO_LOGS   = str(pathlib.Path(os.environ.get("LMSTUDIO_LOGS", os.path.expanduser("~/.lmstudio/server-logs"))))
 
@@ -32,75 +40,18 @@ PORT = int(os.environ.get("USAGE_DASHBOARD_PORT", "9393"))
 
 # ── Pricing table ──────────────────────────────────────────────────────────────
 
-# Fallback pricing ($/1M tokens) for models not present in local catalog.
-# Catalog entries take precedence when found.
-FALLBACK_PRICING: dict = {
-    "anthropic/claude-opus-4-8": {
-        "name": "Claude Opus 4.8", "provider": "anthropic", "modelId": "claude-opus-4-8",
-        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
-    },
-    "anthropic/claude-opus-4-7": {
-        "name": "Claude Opus 4.7", "provider": "anthropic", "modelId": "claude-opus-4-7",
-        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
-    },
-    "anthropic/claude-opus-4-6": {
-        "name": "Claude Opus 4.6", "provider": "anthropic", "modelId": "claude-opus-4-6",
-        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
-    },
-    "anthropic/claude-opus-4-5": {
-        "name": "Claude Opus 4.5", "provider": "anthropic", "modelId": "claude-opus-4-5",
-        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
-    },
-    "anthropic/claude-opus-4": {
-        "name": "Claude Opus 4", "provider": "anthropic", "modelId": "claude-opus-4",
-        "input": 5.0, "output": 25.0, "cacheRead": 0.50, "cacheWrite": 6.25,
-    },
-    "anthropic/claude-sonnet-4-6": {
-        "name": "Claude Sonnet 4.6", "provider": "anthropic", "modelId": "claude-sonnet-4-6",
-        "input": 3.0, "output": 15.0, "cacheRead": 0.30, "cacheWrite": 3.75,
-    },
-    "anthropic/claude-haiku-4-5": {
-        "name": "Claude Haiku 4.5", "provider": "anthropic", "modelId": "claude-haiku-4-5",
-        "input": 1.0, "output": 5.0, "cacheRead": 0.10, "cacheWrite": 1.25,
-    },
-    "anthropic/claude-sonnet-4-5": {
-        "name": "Claude Sonnet 4.5", "provider": "anthropic", "modelId": "claude-sonnet-4-5",
-        "input": 3.0, "output": 15.0, "cacheRead": 0.30, "cacheWrite": 3.75,
-    },
-    "anthropic/claude-haiku-3-5": {
-        "name": "Claude Haiku 3.5", "provider": "anthropic", "modelId": "claude-haiku-3-5",
-        "input": 0.8, "output": 4.0, "cacheRead": 0.08, "cacheWrite": 1.0,
-    },
-    "openai/gpt-5.5": {
-        "name": "GPT-5.5", "provider": "openai", "modelId": "gpt-5.5",
-        "input": 7.0, "output": 21.0, "cacheRead": 1.75, "cacheWrite": 0.0,
-    },
-    "openai/gpt-5.4": {
-        "name": "GPT-5.4", "provider": "openai", "modelId": "gpt-5.4",
-        "input": 10.0, "output": 40.0, "cacheRead": 2.50, "cacheWrite": 0.0,
-    },
-    "openai/gpt-5.4-mini": {
-        "name": "GPT-5.4 Mini", "provider": "openai", "modelId": "gpt-5.4-mini",
-        "input": 0.40, "output": 1.60, "cacheRead": 0.10, "cacheWrite": 0.0,
-    },
-    "openai/o4-mini": {
-        "name": "o4-mini", "provider": "openai", "modelId": "o4-mini",
-        "input": 1.10, "output": 4.40, "cacheRead": 0.275, "cacheWrite": 0.0,
-    },
-    # Local LM Studio models — $0 cost, shown for token-count visibility
-    "lmstudio/qwen/qwen3-4b":                      {"name": "Qwen3-4B (nano)",              "provider": "lmstudio", "modelId": "qwen/qwen3-4b",                                             "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
-    "lmstudio/google/gemma-4-e4b":                 {"name": "Gemma-4 E4B (gemma)",          "provider": "lmstudio", "modelId": "google/gemma-4-e4b",                                        "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
-    "lmstudio/qwen/qwen3-14b":                     {"name": "Qwen3-14B (local)",             "provider": "lmstudio", "modelId": "qwen/qwen3-14b",                                            "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
-    "lmstudio/deepseek/deepseek-r1-0528-qwen3-8b": {"name": "DeepSeek-R1 Qwen3-8B (qwen)", "provider": "lmstudio", "modelId": "deepseek/deepseek-r1-0528-qwen3-8b",                         "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
-    "lmstudio/lmstudio-community/qwen3-coder-30b-a3b-instruct-gguf": {"name": "Qwen3-Coder-30B-A3B (coder)", "provider": "lmstudio", "modelId": "lmstudio-community/qwen3-coder-30b-a3b-instruct-gguf", "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
-}
-
-
+# Real pricing lives in pricing.py, transcribed from vendor pricing pages with
+# source URLs and retrieval dates. Never hand-edit prices here.
 def load_pricing() -> dict:
-    """Returns {provider/modelId: {input, output, cacheRead, cacheWrite}} in $/1M tokens.
-    Starts from FALLBACK_PRICING; catalog entries override fallbacks when present.
+    """Returns {provider/modelId: {input, output, cacheRead, cacheWrite, cacheWrite1h}}
+    in $/1M tokens.
+
+    Starts from the vendor-sourced table in pricing.py. A plugin catalog, if one
+    is present, may override an entry — but only when it carries a non-zero cost
+    block. As of the 2026-09-02 SQLite migration the plugin catalog directories
+    on this host are empty, so pricing.py is the effective source of truth.
     """
-    pricing: dict = dict(FALLBACK_PRICING)  # start with fallbacks
+    pricing: dict = {k: dict(v) for k, v in MODEL_PRICING.items()}
     for cat_path in glob.glob(CATALOG_GLOB):
         try:
             with open(cat_path) as f:
@@ -109,40 +60,71 @@ def load_pricing() -> dict:
                 for m in pdata.get("models", []):
                     cost = m.get("cost")
                     # Skip empty or all-zero catalog cost blocks so the
-                    # fallback table can supply real pricing. Some plugin
-                    # catalogs ship new models with a zeroed cost stub.
+                    # vendor-sourced table can supply real pricing.
                     if cost and any(
-                        cost.get(k) for k in ("input", "output", "cacheRead", "cacheWrite")
+                        cost.get(k) for k in ("input", "output", "cacheRead", "cacheWrite", "cacheWrite1h")
                     ):
                         key = f"{pname}/{m['id']}"
                         pricing[key] = {
-                            "name":       m.get("name", m["id"]),
-                            "provider":   pname,
-                            "modelId":    m["id"],
-                            "input":      cost.get("input", 0),
-                            "output":     cost.get("output", 0),
-                            "cacheRead":  cost.get("cacheRead", 0),
-                            "cacheWrite": cost.get("cacheWrite", 0),
+                            "name":         m.get("name", m["id"]),
+                            "provider":     pname,
+                            "modelId":      m["id"],
+                            "input":        cost.get("input", 0),
+                            "output":       cost.get("output", 0),
+                            "cacheRead":    cost.get("cacheRead", 0),
+                            "cacheWrite":   cost.get("cacheWrite", 0),
+                            "cacheWrite1h": cost.get("cacheWrite1h", 0),
                         }
         except Exception:
             pass
     return pricing
 
 
+# Usage keys that represent billable token volume. Anything outside this set is
+# ignored by the accumulator and the cost math.
+#
+# Deliberately excluded:
+#   total           — a vendor-computed sum of the other fields; adding it
+#                     would double-count every token.
+#   reasoningTokens — already included inside `output` on OpenAI reasoning
+#                     models (verified: reasoningTokens <= output on every
+#                     observed event). Billing it again would overcharge.
+#   cost, contextUsage, promptCache — nested objects, not token counts.
+BILLABLE_KEYS = ("input", "output", "cacheRead", "cacheWrite", "cacheWrite1h")
+
+
+def sanitize_usage(usage: dict | None) -> dict:
+    """Extract only numeric billable token counts from a usage block.
+
+    The runtime `usage` object nests dicts (`cost`, `contextUsage`). The previous
+    implementation summed values blindly and raised TypeError on the first
+    nested dict, which aborted parsing of an entire file inside a broad
+    `except Exception: pass`. Whitelisting scalars makes that failure
+    structurally impossible.
+    """
+    if not isinstance(usage, dict):
+        return {}
+    clean: dict = {}
+    for key in BILLABLE_KEYS:
+        value = usage.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            clean[key] = value
+    return clean
+
+
 def estimate_cost(usage: dict, pricing_entry: dict | None) -> float:
     if not pricing_entry:
         return 0.0
     M = 1_000_000
-    inp        = usage.get("input", 0)
-    out        = usage.get("output", 0)
-    cache_read = usage.get("cacheRead", 0)
-    cache_write= usage.get("cacheWrite", 0)
-    return (
-        inp        * pricing_entry["input"]      / M +
-        out        * pricing_entry["output"]     / M +
-        cache_read * pricing_entry["cacheRead"]  / M +
-        cache_write* pricing_entry["cacheWrite"] / M
-    )
+    total = 0.0
+    for key in BILLABLE_KEYS:
+        tokens = usage.get(key, 0)
+        if not isinstance(tokens, (int, float)) or isinstance(tokens, bool):
+            continue
+        total += tokens * pricing_entry.get(key, 0) / M
+    return total
 
 
 # ── Run record builder ─────────────────────────────────────────────────────────
@@ -197,75 +179,67 @@ class RunRecord:
         }
 
 
-def parse_trajectory_file(path: str, pricing: dict) -> list[dict]:
-    """Parse a trajectory file into a list of completed run records."""
+def parse_events(events, pricing: dict) -> list[dict]:
+    """Fold an iterable of trajectory events into completed run records.
+
+    A malformed single event is skipped; it never aborts the whole stream.
+    """
     runs: dict[str, RunRecord] = {}
     completed: list[dict] = []
 
-    try:
-        with open(path, errors="replace") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    ev = json.loads(raw)
-                except Exception:
-                    continue
-                t      = ev.get("type", "")
-                run_id = ev.get("runId")
-                if not run_id:
-                    continue
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        t      = ev.get("type", "")
+        run_id = ev.get("runId")
+        if not run_id:
+            continue
 
-                if run_id not in runs:
-                    runs[run_id] = RunRecord()
+        if run_id not in runs:
+            runs[run_id] = RunRecord()
 
-                r = runs[run_id]
-                r.run_id     = run_id
-                r.session_id = ev.get("sessionId", r.session_id)
-                r.session_key= ev.get("sessionKey", r.session_key)
-                r.provider   = ev.get("provider", r.provider)
-                r.model_id   = ev.get("modelId", r.model_id)
-                r.model_api  = ev.get("modelApi", r.model_api)
+        r = runs[run_id]
+        r.run_id     = run_id
+        r.session_id = ev.get("sessionId", r.session_id)
+        r.session_key= ev.get("sessionKey", r.session_key)
+        r.provider   = ev.get("provider", r.provider)
+        r.model_id   = ev.get("modelId", r.model_id)
+        r.model_api  = ev.get("modelApi", r.model_api)
 
-                if t == "session.started":
-                    r.started_ts = ev.get("ts", r.started_ts)
-                    d = ev.get("data", {})
-                    r.trigger    = d.get("trigger", r.trigger)
-                    r.agent_id   = d.get("agentId", r.agent_id)
-                    r.channel    = d.get("messageProvider", r.channel)
-                    r.status     = "running"
+        if t == "session.started":
+            r.started_ts = ev.get("ts", r.started_ts)
+            d = ev.get("data", {})
+            r.trigger    = d.get("trigger", r.trigger)
+            r.agent_id   = d.get("agentId", r.agent_id)
+            r.channel    = d.get("messageProvider", r.channel)
+            r.status     = "running"
 
-                elif t == "model.completed":
-                    d = ev.get("data", {})
-                    usage = d.get("usage", {})
-                    if usage:
-                        # accumulate across multi-turn within a run
-                        for k, v in usage.items():
-                            r.usage[k] = r.usage.get(k, 0) + v
-                    r.aborted    = d.get("aborted", r.aborted)
-                    r.timed_out  = d.get("timedOut", r.timed_out)
+        elif t == "model.completed":
+            d = ev.get("data", {})
+            usage = sanitize_usage(d.get("usage"))
+            # accumulate across multi-turn within a run
+            for k, v in usage.items():
+                r.usage[k] = r.usage.get(k, 0) + v
+            r.aborted    = d.get("aborted", r.aborted)
+            r.timed_out  = d.get("timedOut", r.timed_out)
 
-                elif t == "session.ended":
-                    r.ended_ts = ev.get("ts", r.ended_ts)
-                    d = ev.get("data", {})
-                    r.aborted    = d.get("aborted", r.aborted)
-                    r.timed_out  = d.get("timedOut", r.timed_out)
-                    outcome      = d.get("status", "success")
-                    if r.aborted or r.timed_out:
-                        r.status = "aborted"
-                    else:
-                        r.status = outcome or "success"
+        elif t == "session.ended":
+            r.ended_ts = ev.get("ts", r.ended_ts)
+            d = ev.get("data", {})
+            r.aborted    = d.get("aborted", r.aborted)
+            r.timed_out  = d.get("timedOut", r.timed_out)
+            outcome      = d.get("status", "success")
+            if r.aborted or r.timed_out:
+                r.status = "aborted"
+            else:
+                r.status = outcome or "success"
 
-                    # compute cost
-                    pk = f"{r.provider}/{r.model_id}" if r.provider and r.model_id else None
-                    pe = pricing.get(pk)
-                    r.cost_usd = estimate_cost(r.usage, pe)
-                    completed.append(r.to_dict())
-                    del runs[run_id]
-
-    except Exception:
-        pass
+            # compute cost
+            pk = f"{r.provider}/{r.model_id}" if r.provider and r.model_id else None
+            pe = pricing.get(pk)
+            r.cost_usd = estimate_cost(r.usage, pe)
+            completed.append(r.to_dict())
+            del runs[run_id]
 
     # Flush still-running
     for r in runs.values():
@@ -276,12 +250,91 @@ def parse_trajectory_file(path: str, pricing: dict) -> list[dict]:
 
     return completed
 
+# ── SQLite trajectory reader ──────────────────────────────────────────
+#
+# Since the 2026-09-02 migration, runtime trajectory events live in the
+# per-agent database at:
+#   ~/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite
+# table `trajectory_runtime_events` (session_id, seq, run_id, event_json,
+# created_at).
+#
+# The database is opened read-only via a file: URI. If the live database is
+# locked or mid-write, we fall back to reading a temporary copy so a busy
+# gateway can never block or corrupt the dashboard's view.
 
-# ── State store ────────────────────────────────────────────────────────────────
+TRAJECTORY_TABLE = "trajectory_runtime_events"
 
-def _hottest_trajectory_file() -> str | None:
-    """Return the path of the most-recently-modified trajectory file, or None."""
-    files = glob.glob(SESSIONS_GLOB)
+
+def _agent_db_paths() -> list[str]:
+    return sorted(glob.glob(AGENT_DB_GLOB))
+
+
+def _agent_id_from_db(path: str) -> str | None:
+    # .../agents/<agentId>/agent/openclaw-agent.sqlite
+    parts = pathlib.Path(path).parts
+    try:
+        return parts[parts.index("agents") + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def _query_trajectory(db_path: str, since_created_at: int | None):
+    """Yield event dicts from one agent database, newest-safe and read-only."""
+    sql = f"SELECT event_json FROM {TRAJECTORY_TABLE}"
+    params: tuple = ()
+    if since_created_at is not None:
+        sql += " WHERE created_at > ?"
+        params = (since_created_at,)
+    sql += " ORDER BY session_id, seq"
+
+    def _run(target: str):
+        conn = sqlite3.connect(f"file:{target}?mode=ro", uri=True, timeout=5.0)
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            for (event_json,) in conn.execute(sql, params):
+                try:
+                    yield json.loads(event_json)
+                except Exception:
+                    continue
+        finally:
+            conn.close()
+
+    try:
+        yield from _run(db_path)
+        return
+    except sqlite3.DatabaseError:
+        pass
+
+    # Locked or mid-checkpoint: work from a snapshot copy instead.
+    tmp_dir = tempfile.mkdtemp(prefix="usage-dash-")
+    try:
+        snapshot = os.path.join(tmp_dir, "snapshot.sqlite")
+        shutil.copyfile(db_path, snapshot)
+        for suffix in ("-wal", "-shm"):
+            side = db_path + suffix
+            if os.path.exists(side):
+                shutil.copyfile(side, snapshot + suffix)
+        yield from _run(snapshot)
+    except Exception:
+        return
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def parse_agent_db(db_path: str, pricing: dict,
+                   since_created_at: int | None = None) -> list[dict]:
+    """Parse one per-agent SQLite database into completed run records."""
+    agent_id = _agent_id_from_db(db_path)
+    runs = parse_events(_query_trajectory(db_path, since_created_at), pricing)
+    for r in runs:
+        if not r.get("agentId"):
+            r["agentId"] = agent_id
+    return runs
+
+
+def _hottest_agent_db() -> str | None:
+    """Return the most-recently-modified per-agent SQLite database."""
+    files = _agent_db_paths()
     if not files:
         return None
     return max(files, key=lambda p: os.path.getmtime(p))
@@ -290,7 +343,7 @@ def _hottest_trajectory_file() -> str | None:
 # ── LM Studio log parser ──────────────────────────────────────────────────────
 #
 # Parses ~/.lmstudio/server-logs/YYYY-MM/YYYY-MM-DD.N.log files into the same
-# run-record shape as parse_trajectory_file(). Each completion is identified by:
+# run-record shape as the SQLite trajectory reader. Each completion is identified by:
 #   START : [TIMESTAMP][INFO][model/id] Running chat completion ...
 #   TIMING: print_timing ... prompt eval time = X ms / N tokens  (prompt tokens)
 #           print_timing ... eval time = X ms / N tokens          (completion tokens)
@@ -459,8 +512,6 @@ class Store:
         self.pricing: dict = {}
         self.lock     = threading.Lock()
         self.sse_clients: list[queue.Queue] = []
-        self._known_files: dict[str, int] = {}  # path → mtime
-        self._hot_file:    str | None = None    # always-reread active file
         self.active_session_file: str | None = None  # basename exposed to UI
 
     def reload_pricing(self):
@@ -469,53 +520,24 @@ class Store:
     def initial_load(self):
         self.reload_pricing()
         all_runs: list[dict] = []
-        for path in glob.glob(SESSIONS_GLOB):
-            runs = parse_trajectory_file(path, self.pricing)
-            all_runs.extend(runs)
+        for path in _agent_db_paths():
+            all_runs.extend(parse_agent_db(path, self.pricing))
         # Merge LM Studio local runs
         lms_runs = parse_lmstudio_logs(self.pricing)
         all_runs.extend(lms_runs)
         all_runs.sort(key=lambda r: r.get("startedTs") or "", reverse=True)
-        hot = _hottest_trajectory_file()
+        hot = _hottest_agent_db()
         with self.lock:
             self.runs = all_runs[:self.MAX_RUNS]
-            self._known_files = {p: int(os.path.getmtime(p)) for p in glob.glob(SESSIONS_GLOB)}
             self._lms_log_mtimes = {p: int(os.path.getmtime(p)) for p in _lmstudio_log_files()}
-            self._hot_file = hot
             self.active_session_file = os.path.basename(hot) if hot else None
 
     def poll_new(self):
-        """Called by background thread. Returns list of newly completed runs.
-
-        Strategy:
-        - Track mtime for all files; re-parse any that changed.
-        - Additionally, ALWAYS re-parse the hottest (most-recently-modified)
-          file on every poll cycle so in-flight sessions are reflected without
-          waiting for an mtime tick between two consecutive turns.
-        """
+        """Called by background thread. Returns list of newly completed runs."""
         self.reload_pricing()
-        new_runs: list[dict] = []
-        current_files = set(glob.glob(SESSIONS_GLOB))
-        hot = _hottest_trajectory_file()
-
-        # Files changed since last poll (mtime-based)
-        changed: list[str] = []
-        for path in current_files:
-            try:
-                mtime = int(os.path.getmtime(path))
-            except Exception:
-                continue
-            if self._known_files.get(path, 0) != mtime:
-                changed.append(path)
-                self._known_files[path] = mtime
-
-        # Always include the hottest file so active sessions stream in real-time
-        if hot and hot not in changed:
-            changed.append(hot)
-
-        for path in changed:
-            runs = parse_trajectory_file(path, self.pricing)
-            new_runs.extend(runs)
+        parsed_runs: list[dict] = []
+        for path in _agent_db_paths():
+            parsed_runs.extend(parse_agent_db(path, self.pricing))
 
         # Poll LM Studio logs for new completions
         lms_files = _lmstudio_log_files()
@@ -534,23 +556,39 @@ class Store:
             lms_changed.append(lms_files[0])
         for path in lms_changed:
             lms_runs = _parse_lmstudio_log_file(path, self.pricing, since_dt=None)
-            new_runs.extend(lms_runs)
+            parsed_runs.extend(lms_runs)
 
         # Update hot-file tracking
         with self.lock:
-            self._hot_file = hot
+            hot = _hottest_agent_db()
             self.active_session_file = os.path.basename(hot) if hot else None
 
-        if new_runs:
-            new_runs.sort(key=lambda r: r.get("startedTs") or "", reverse=True)
-            with self.lock:
-                # merge: remove existing records with same runId, prepend new
-                existing_ids = {r["runId"] for r in new_runs}
-                self.runs = [r for r in self.runs if r["runId"] not in existing_ids]
-                self.runs = (new_runs + self.runs)[:self.MAX_RUNS]
-            self._broadcast(new_runs)
+        if not parsed_runs:
+            return []
 
-        return new_runs
+        parsed_runs.sort(key=lambda r: r.get("startedTs") or "", reverse=True)
+
+        with self.lock:
+            existing_by_id = {r["runId"]: r for r in self.runs}
+
+        changed_runs: list[dict] = []
+        changed_ids: set[str] = set()
+        for r in parsed_runs:
+            run_id = r.get("runId")
+            if not run_id:
+                continue
+            prev = existing_by_id.get(run_id)
+            if prev != r:
+                changed_runs.append(r)
+                changed_ids.add(run_id)
+
+        if changed_runs:
+            with self.lock:
+                self.runs = [r for r in self.runs if r["runId"] not in changed_ids]
+                self.runs = (changed_runs + self.runs)[:self.MAX_RUNS]
+            self._broadcast(changed_runs)
+
+        return changed_runs
 
     def _broadcast(self, runs: list[dict]):
         payload = json.dumps({"type": "runs", "data": runs})
@@ -579,7 +617,7 @@ class Store:
             "pollIntervalMs": 5000,
             "note": (
                 "Active session detected. Costs for the current open session are "
-                "re-read every 5 s and may lag by up to one turn."
+                "re-read from SQLite every 5 s and may lag by up to one turn."
             ) if hot else None,
         }
 
@@ -592,6 +630,7 @@ class Store:
         total_output = sum(r.get("usage", {}).get("output", 0) for r in runs)
         total_cache_read  = sum(r.get("usage", {}).get("cacheRead", 0) for r in runs)
         total_cache_write = sum(r.get("usage", {}).get("cacheWrite", 0) for r in runs)
+        total_cache_write_1h = sum(r.get("usage", {}).get("cacheWrite1h", 0) for r in runs)
 
         by_model: dict[str, dict] = {}
         by_provider: dict[str, dict] = {}
@@ -599,7 +638,7 @@ class Store:
 
         def acc(bucket: dict, key: str, r: dict):
             if key not in bucket:
-                bucket[key] = {"runs": 0, "costUsd": 0.0, "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+                bucket[key] = {"runs": 0, "costUsd": 0.0, "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "cacheWrite1h": 0}
             b = bucket[key]
             b["runs"] += 1
             b["costUsd"] += r.get("costUsd", 0)
@@ -608,6 +647,7 @@ class Store:
             b["output"]     += u.get("output", 0)
             b["cacheRead"]  += u.get("cacheRead", 0)
             b["cacheWrite"] += u.get("cacheWrite", 0)
+            b["cacheWrite1h"] += u.get("cacheWrite1h", 0)
 
         for r in runs:
             if r.get("modelId"):
@@ -629,7 +669,8 @@ class Store:
                 "output":     total_output,
                 "cacheRead":  total_cache_read,
                 "cacheWrite": total_cache_write,
-                "total":      total_input + total_output + total_cache_read + total_cache_write,
+                "cacheWrite1h": total_cache_write_1h,
+                "total":      total_input + total_output + total_cache_read + total_cache_write + total_cache_write_1h,
             },
             "byModel":    sort_bucket(by_model),
             "byProvider": sort_bucket(by_provider),
@@ -794,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"Loading trajectory data from {OPENCLAW_STATE}/agents/*/sessions/ …")
+    print(f"Loading trajectory data from {OPENCLAW_STATE}/agents/*/agent/openclaw-agent.sqlite …")
     STORE.initial_load()
     runs = STORE.get_runs(5)
     print(f"Loaded {len(STORE.runs)} runs ({len(STORE.pricing)} priced models).")

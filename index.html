@@ -411,14 +411,14 @@
           <span id="accuracy-chevron" style="font-size:10px;margin-left:4px">▶</span>
         </h3>
         <div id="accuracy-body" style="display:none">
-          <p>Figures here are <strong>estimates</strong> derived from local trajectory files and may be lower than your billing console. Known gap sources:</p>
+          <p>Figures here are <strong>estimates</strong> derived from local OpenClaw trajectory events and may be lower than your billing console. Known gap sources:</p>
           <ul>
-            <li><strong>Crashed/killed sessions</strong> — if OpenClaw was force-killed mid-turn the API call was billed but <code>model.completed</code> never wrote to disk.</li>
+            <li><strong>Crashed/killed sessions</strong> — if OpenClaw was force-killed mid-turn the API call was billed but <code>model.completed</code> never reached SQLite.</li>
             <li><strong>Active session lag</strong> — the current open session flushes after each turn completes; the very latest turn may not appear yet.</li>
             <li><strong>Multiple API keys</strong> — the console aggregates all keys on the workspace; this dashboard only sees calls made through the local OpenClaw process.</li>
-            <li><strong>Missing catalog pricing</strong> — models not in the local catalog default to the built-in fallback table; rates may differ slightly from Anthropic billing.</li>
+            <li><strong>Unpublished model pricing</strong> — models without a published vendor rate are left unpriced instead of being guessed.</li>
           </ul>
-          <p style="margin-top:6px">Typical observed gap: <strong>5–15%</strong> below console. Use the Anthropic console as the source of truth for billing.</p>
+          <p style="margin-top:6px">Vendor rates are embedded from Anthropic/OpenAI pricing pages. Use the billing console as the source of truth for invoices.</p>
         </div>
       </div>
     </aside>
@@ -452,6 +452,7 @@
             <th onclick="sortBy('usage.input')" id="th-usage.input">Input <span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('usage.output')" id="th-usage.output">Output <span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('usage.cacheRead')" id="th-usage.cacheRead">Cache↓ <span class="sort-arrow">↕</span></th>
+            <th onclick="sortBy('usage.cacheWrite1h')" id="th-usage.cacheWrite1h">Cache 1h <span class="sort-arrow">↕</span></th>
             <th onclick="sortBy('costUsd')" id="th-costUsd" class="sorted">Cost <span class="sort-arrow">↓</span></th>
             <th onclick="sortBy('durationMs')" id="th-durationMs">Duration <span class="sort-arrow">↕</span></th>
             <th>Session</th>
@@ -737,21 +738,23 @@ function computeStats(runs) {
   const byModel = {}, byProvider = {}, byChannel = {};
   function acc(b, key, r) {
     if (!key) return;
-    if (!b[key]) b[key] = { runs: 0, costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    if (!b[key]) b[key] = { runs: 0, costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 };
     const e = b[key], u = r.usage || {};
     e.runs++; e.costUsd += r.costUsd || 0;
     e.input      += u.input      || 0;
     e.output     += u.output     || 0;
     e.cacheRead  += u.cacheRead  || 0;
     e.cacheWrite += u.cacheWrite || 0;
+    e.cacheWrite1h += u.cacheWrite1h || 0;
   }
-  let tc = 0, ti = 0, to = 0, tcr = 0, tcw = 0;
+  let tc = 0, ti = 0, to = 0, tcr = 0, tcw = 0, tcw1h = 0;
   for (const r of runs) {
     tc  += r.costUsd          || 0;
     ti  += r.usage?.input     || 0;
     to  += r.usage?.output    || 0;
     tcr += r.usage?.cacheRead || 0;
     tcw += r.usage?.cacheWrite|| 0;
+    tcw1h += r.usage?.cacheWrite1h || 0;
     acc(byModel,    r.modelId,  r);
     acc(byProvider, r.provider, r);
     acc(byChannel,  r.channel,  r);
@@ -759,7 +762,7 @@ function computeStats(runs) {
   const sd = b => Object.fromEntries(Object.entries(b).sort((a,b) => b[1].costUsd - a[1].costUsd));
   return {
     totalRuns: runs.length, totalCostUsd: tc,
-    totalTokens: { input: ti, output: to, cacheRead: tcr, cacheWrite: tcw },
+    totalTokens: { input: ti, output: to, cacheRead: tcr, cacheWrite: tcw, cacheWrite1h: tcw1h, total: ti + to + tcr + tcw + tcw1h },
     byModel: sd(byModel), byProvider: sd(byProvider), byChannel: sd(byChannel),
   };
 }
@@ -789,6 +792,7 @@ function renderStats(stats) {
     ['Output',      tk.output,      '#7c6af7'],
     ['Cache Read',  tk.cacheRead,   '#4ade80'],
     ['Cache Write', tk.cacheWrite,  '#facc15'],
+    ['Cache W1h',   tk.cacheWrite1h,'#fb923c'],
   ];
   const maxTk = Math.max(...rows.map(r => r[1] || 0), 1);
   rows.forEach(([lbl, val, color]) => {
@@ -883,6 +887,7 @@ function renderTable(flashIds = null) {
     const inp  = u.input  || 0;
     const out  = u.output || 0;
     const cr   = u.cacheRead || 0;
+    const cw1h = u.cacheWrite1h || 0;
     const cost = r.costUsd || 0;
     const costCell = cost > 0
       ? `<span class="cost-cell">${fmt_cost(cost)}</span>`
@@ -900,6 +905,7 @@ function renderTable(flashIds = null) {
       <td class="tokens-cell">${fmt_tokens(inp)}</td>
       <td class="tokens-cell">${fmt_tokens(out)}</td>
       <td class="dim-cell">${fmt_tokens(cr)}</td>
+      <td class="dim-cell">${fmt_tokens(cw1h)}</td>
       <td>${costCell}</td>
       <td class="dim-cell">${fmt_dur(r.durationMs)}</td>
       <td class="dim-cell" title="${r.sessionKey || ''}">${shortSession(r.sessionKey)}</td>
