@@ -149,6 +149,7 @@ _LOCAL_IDS = [
     ("qwen/qwen3-4b",                              "Qwen3-4B (nano)"),
     ("qwen/qwen3-14b",                             "Qwen3-14B (local)"),
     ("qwen/qwen3-coder-30b",                       "Qwen3-Coder-30B (coder)"),
+    ("qwen/qwen3-coder-next",                      "Qwen3-Coder-Next (coder)"),
     ("google/gemma-4-e4b",                         "Gemma-4 E4B (gemma)"),
     ("deepseek/deepseek-r1-0528-qwen3-8b",         "DeepSeek-R1 Qwen3-8B (qwen)"),
     ("lmstudio-community/qwen3-coder-30b-a3b-instruct-gguf",
