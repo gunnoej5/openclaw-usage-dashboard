@@ -72,6 +72,22 @@
   .spacer { flex: 1; }
   #last-updated { color: var(--dim); font-size: 12px; font-family: var(--mono); }
 
+  /* ── Per-model pricing strip (right pane, above filters) ── */
+  .model-pricing-strip { display: flex; gap: 6px; flex-wrap: wrap; }
+  .model-price-chip {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-family: var(--mono);
+    white-space: nowrap;
+  }
+  .model-price-chip .rate-in  { color: var(--blue); }
+  .model-price-chip .rate-out { color: var(--purple); }
+  .model-price-chip.unpriced  { color: var(--red); border-color: var(--red); }
+
   main {
     display: grid;
     grid-template-columns: 300px 1fr;
@@ -113,6 +129,7 @@
   .stat-value.cost { color: var(--accent2); }
   .stat-value.tokens { color: var(--blue); }
   .stat-value.runs { color: var(--purple); }
+  .stat-value.stale { color: var(--red); }
   .stat-bar-wrap { margin-top: 4px; }
   .stat-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .stat-bar-label { color: var(--text2); font-size: 11px; min-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -383,6 +400,14 @@
         <div id="token-breakdown"></div>
       </div>
 
+      <div class="stat-group">
+        <h3>Pricing Sync</h3>
+        <div class="stat-row">
+          <span class="stat-label">Last synced</span>
+          <span class="stat-value" id="pricing-sync-date">—</span>
+        </div>
+      </div>
+
       <div class="stat-group console-truth-group">
         <h3>Console Source of Truth</h3>
         <div style="font-size:11px;color:var(--dim);margin-bottom:8px">Enter billing total from Anthropic/OpenAI console for the <strong style="color:var(--text)">current time window</strong> to track variance.</div>
@@ -424,6 +449,7 @@
     </aside>
 
     <div id="run-pane">
+      <div id="model-pricing-strip" class="model-pricing-strip"></div>
       <div class="filters">
         <input type="text" id="filter-search" placeholder="Search model / session / channel…" oninput="applyFilters()"/>
         <select id="filter-provider" onchange="applyFilters()">
@@ -597,6 +623,61 @@ function loadConsoleFromServer() {
 }
 
 // ── Active-session banner ─────────────────────────────────────────────────────
+let pricingFreshness = null;
+let modelPricing = {};
+
+function renderPricingSync() {
+  const dateEl = document.getElementById('pricing-sync-date');
+  if (!dateEl) return;
+  const sources = pricingFreshness && pricingFreshness.sources;
+  if (!sources) {
+    dateEl.textContent = '—';
+    dateEl.classList.remove('stale');
+    dateEl.removeAttribute('title');
+    return;
+  }
+  // Oldest retrieved date across vendor sources — the most conservative
+  // "as of" claim the dashboard can make about its own pricing.
+  const dated = Object.entries(sources)
+    .filter(([, v]) => v && v.retrieved)
+    .sort((a, b) => a[1].retrieved < b[1].retrieved ? -1 : 1);
+  dateEl.textContent = dated.length ? dated[0][1].retrieved : '—';
+  dateEl.classList.toggle('stale', !!(pricingFreshness && pricingFreshness.stale));
+  dateEl.title = dated.map(([p, v]) => p + ': ' + v.retrieved + ' (' + v.ageDays + 'd ago)').join('\n');
+}
+
+function fmt_rate(v) {
+  if (v === undefined || v === null) return '0';
+  return v >= 10 ? v.toFixed(2) : v.toFixed(3);
+}
+
+function loadPricingTable() {
+  fetch('/api/pricing').then(r => r.json()).then(p => {
+    modelPricing = p || {};
+    renderModelPricingStrip();
+  }).catch(() => {});
+}
+
+function renderModelPricingStrip() {
+  const el = document.getElementById('model-pricing-strip');
+  if (!el) return;
+  const seen = new Map();
+  windowedRuns().forEach(r => {
+    if (!r.modelId) return;
+    const key = r.provider ? (r.provider + '/' + r.modelId) : r.modelId;
+    if (!seen.has(key)) seen.set(key, { modelId: r.modelId, key });
+  });
+  const entries = [...seen.values()].sort((a, b) => a.modelId.localeCompare(b.modelId));
+  el.innerHTML = entries.map(({ modelId, key }) => {
+    const p = modelPricing[key];
+    if (!p) {
+      return '<div class="model-price-chip unpriced" title="' + key + ' has no vendor pricing entry">' + modelId + ' — unpriced</div>';
+    }
+    return '<div class="model-price-chip" title="' + key + ' — per 1M tokens">' + modelId +
+      ' <span class="rate-in">in $' + fmt_rate(p.input) + '</span> / <span class="rate-out">out $' + fmt_rate(p.output) + '</span></div>';
+  }).join('');
+}
+
 async function pollStatus() {
   try {
     const resp = await fetch('/api/status');
@@ -607,6 +688,8 @@ async function pollStatus() {
     } else {
       banner.classList.remove('visible');
     }
+    pricingFreshness = s.pricingFreshness || null;
+    renderPricingSync();
   } catch {}
 }
 setInterval(pollStatus, 10_000);
@@ -620,6 +703,7 @@ async function loadInitial() {
   document.getElementById('last-updated').textContent = fmt_ts(new Date());
   pollStatus();
   loadConsoleFromServer();
+  loadPricingTable();
 }
 
 function refreshStats() {
@@ -770,6 +854,7 @@ function computeStats(runs) {
 function renderSidebarFromRuns() {
   renderStats(computeStats(windowedRuns()));
   updateVariance();
+  renderModelPricingStrip();
 }
 
 function renderStats(stats) {
