@@ -48,7 +48,7 @@ PRICING_SOURCES = {
     },
     "lmstudio": {
         "url": "local inference — no marginal token cost",
-        "retrieved": "2026-09-16",
+        "retrieved": "2026-09-25",
     },
 }
 
@@ -188,3 +188,83 @@ def build_pricing() -> dict:
 
 
 MODEL_PRICING = build_pricing()
+
+
+# ── Freshness enforcement ───────────────────────────────────────────────────
+#
+# This table is hand-transcribed from vendor pricing pages on purpose (see
+# module docstring: "Do not guess prices"). Scraping and auto-parsing those
+# pages on a timer would silently reintroduce exactly the failure mode this
+# file exists to avoid — a plausible-looking wrong number with no human in
+# the loop. So this does not fetch or rewrite prices itself.
+#
+# Instead it is a forcing function: once any vendor source in PRICING_SOURCES
+# is more than PRICING_MAX_AGE_DAYS old, warn_if_stale() prints a loud,
+# repeated warning and pricing_freshness() exposes the same fact to the API
+# (see /api/status in server.py), so both the operator and the dashboard UI
+# surface it every week until a human re-checks the vendor pages and updates
+# the tables and PRICING_SOURCES[*]["retrieved"] dates by hand.
+
+from datetime import date, datetime as _datetime, timezone as _timezone
+
+PRICING_MAX_AGE_DAYS = 7
+
+
+def pricing_freshness() -> dict:
+    """Report how many days old each vendor pricing source is.
+
+    Returns {"sources": {provider: {"retrieved", "ageDays", "stale"}},
+    "stale": bool, "checkedAt": iso8601}. A source with an unparsable or
+    missing "retrieved" date is skipped rather than guessed at.
+    """
+    today = date.today()
+    sources: dict = {}
+    stale = False
+    for provider, meta in PRICING_SOURCES.items():
+        retrieved = meta.get("retrieved")
+        if not retrieved:
+            continue
+        try:
+            retrieved_date = date.fromisoformat(retrieved)
+        except ValueError:
+            continue
+        age_days = (today - retrieved_date).days
+        is_stale = age_days > PRICING_MAX_AGE_DAYS
+        stale = stale or is_stale
+        sources[provider] = {
+            "retrieved": retrieved,
+            "ageDays": age_days,
+            "stale": is_stale,
+        }
+    return {
+        "sources": sources,
+        "stale": stale,
+        "checkedAt": _datetime.now(_timezone.utc).isoformat(),
+    }
+
+
+def warn_if_stale(logger=print) -> bool:
+    """Print a hard-to-miss warning when any pricing source has gone stale.
+
+    Call once at server startup and once a week thereafter (see
+    schedule_weekly_freshness_check() in server.py). Returns True if a
+    warning was printed. Never rewrites pricing data itself.
+    """
+    freshness = pricing_freshness()
+    if not freshness["stale"]:
+        return False
+    stale_sources = [p for p, r in freshness["sources"].items() if r["stale"]]
+    logger("=" * 78)
+    logger(
+        f"PRICING STALE: {', '.join(stale_sources)} pricing has not been "
+        f"re-verified against the vendor page in over {PRICING_MAX_AGE_DAYS} days."
+    )
+    for p in stale_sources:
+        url = PRICING_SOURCES[p].get("url", "")
+        age = freshness["sources"][p]["ageDays"]
+        logger(f"  - {p}: last retrieved {freshness['sources'][p]['retrieved']} "
+               f"({age}d ago) — {url}")
+    logger("Re-check the vendor pages above, then update pricing.py's tables "
+           "and PRICING_SOURCES[*]['retrieved'] by hand.")
+    logger("=" * 78)
+    return True

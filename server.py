@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
-from pricing import MODEL_PRICING
+from pricing import MODEL_PRICING, pricing_freshness, warn_if_stale, PRICING_MAX_AGE_DAYS
 
 OPENCLAW_STATE  = pathlib.Path(os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw")))
 # OpenClaw 2026.8.x moved runtime trajectory capture out of per-session JSONL
@@ -619,6 +619,7 @@ class Store:
                 "Active session detected. Costs for the current open session are "
                 "re-read from SQLite every 5 s and may lag by up to one turn."
             ) if hot else None,
+            "pricingFreshness": pricing_freshness(),
         }
 
     def get_stats(self) -> dict:
@@ -718,6 +719,19 @@ def background_poller():
             STORE.poll_new()
         except Exception:
             pass
+
+
+def schedule_weekly_freshness_check():
+    """Re-check pricing-source age once a day and warn loudly once it has
+    gone over PRICING_MAX_AGE_DAYS. This only ever reads dates baked into
+    pricing.py; it never fetches or rewrites prices (see pricing.py's
+    "Freshness enforcement" section for why)."""
+    while True:
+        try:
+            warn_if_stale()
+        except Exception:
+            pass
+        time.sleep(24 * 60 * 60)
 
 
 # ── HTTP handler ───────────────────────────────────────────────────────────────
@@ -840,8 +854,14 @@ if __name__ == "__main__":
     runs = STORE.get_runs(5)
     print(f"Loaded {len(STORE.runs)} runs ({len(STORE.pricing)} priced models).")
 
+    warn_if_stale()
+
     t = threading.Thread(target=background_poller, daemon=True)
     t.start()
+
+    freshness_thread = threading.Thread(
+        target=schedule_weekly_freshness_check, daemon=True)
+    freshness_thread.start()
 
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Dashboard → http://127.0.0.1:{PORT}/")
