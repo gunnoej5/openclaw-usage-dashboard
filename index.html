@@ -72,22 +72,6 @@
   .spacer { flex: 1; }
   #last-updated { color: var(--dim); font-size: 12px; font-family: var(--mono); }
 
-  /* ── Per-model pricing strip (right pane, above filters) ── */
-  .model-pricing-strip { display: flex; gap: 6px; flex-wrap: wrap; }
-  .model-price-chip {
-    background: var(--bg3);
-    border: 1px solid var(--border);
-    color: var(--text2);
-    padding: 4px 10px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-family: var(--mono);
-    white-space: nowrap;
-  }
-  .model-price-chip .rate-in  { color: var(--blue); }
-  .model-price-chip .rate-out { color: var(--purple); }
-  .model-price-chip.unpriced  { color: var(--red); border-color: var(--red); }
-
   main {
     display: grid;
     grid-template-columns: 300px 1fr;
@@ -130,6 +114,20 @@
   .stat-value.tokens { color: var(--blue); }
   .stat-value.runs { color: var(--purple); }
   .stat-value.stale { color: var(--red); }
+  .pricing-sync-sublabel {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text2);
+    margin: 8px 0 0;
+    text-align: right;
+  }
+  .pricing-sync-subsublabel {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--blue);
+    margin: 0 0 4px;
+    text-align: right;
+  }
   .stat-bar-wrap { margin-top: 4px; }
   .stat-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .stat-bar-label { color: var(--text2); font-size: 11px; min-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -406,6 +404,9 @@
           <span class="stat-label">Last synced</span>
           <span class="stat-value" id="pricing-sync-date">—</span>
         </div>
+        <div class="pricing-sync-sublabel">Cost per 1M tokens</div>
+        <div class="pricing-sync-subsublabel">Input&nbsp;&nbsp;/&nbsp;&nbsp;Output</div>
+        <div id="pricing-sync-models"></div>
       </div>
 
       <div class="stat-group console-truth-group">
@@ -449,7 +450,6 @@
     </aside>
 
     <div id="run-pane">
-      <div id="model-pricing-strip" class="model-pricing-strip"></div>
       <div class="filters">
         <input type="text" id="filter-search" placeholder="Search model / session / channel…" oninput="applyFilters()"/>
         <select id="filter-provider" onchange="applyFilters()">
@@ -654,27 +654,31 @@ function fmt_rate(v) {
 function loadPricingTable() {
   fetch('/api/pricing').then(r => r.json()).then(p => {
     modelPricing = p || {};
-    renderModelPricingStrip();
+    renderModelPricingList();
   }).catch(() => {});
 }
 
-function renderModelPricingStrip() {
-  const el = document.getElementById('model-pricing-strip');
+function renderModelPricingList() {
+  const el = document.getElementById('pricing-sync-models');
   if (!el) return;
   const seen = new Map();
-  windowedRuns().forEach(r => {
+  filteredRuns().forEach(r => {
     if (!r.modelId) return;
     const key = r.provider ? (r.provider + '/' + r.modelId) : r.modelId;
     if (!seen.has(key)) seen.set(key, { modelId: r.modelId, key });
   });
   const entries = [...seen.values()].sort((a, b) => a.modelId.localeCompare(b.modelId));
+  if (!entries.length) { el.innerHTML = ""; return; }
   el.innerHTML = entries.map(({ modelId, key }) => {
     const p = modelPricing[key];
     if (!p) {
-      return '<div class="model-price-chip unpriced" title="' + key + ' has no vendor pricing entry">' + modelId + ' — unpriced</div>';
+      return '<div class="stat-row" title="' + key + ' has no vendor pricing entry">' +
+        '<span class="stat-label">' + modelId + '</span>' +
+        '<span class="stat-value stale">unpriced</span></div>';
     }
-    return '<div class="model-price-chip" title="' + key + ' — per 1M tokens">' + modelId +
-      ' <span class="rate-in">in $' + fmt_rate(p.input) + '</span> / <span class="rate-out">out $' + fmt_rate(p.output) + '</span></div>';
+    return '<div class="stat-row" title="' + key + ' — per 1M tokens, input / output">' +
+      '<span class="stat-label">' + modelId + '</span>' +
+      '<span class="stat-value cost">$' + fmt_rate(p.input) + ' / $' + fmt_rate(p.output) + '</span></div>';
   }).join('');
 }
 
@@ -854,7 +858,6 @@ function computeStats(runs) {
 function renderSidebarFromRuns() {
   renderStats(computeStats(windowedRuns()));
   updateVariance();
-  renderModelPricingStrip();
 }
 
 function renderStats(stats) {
@@ -955,6 +958,7 @@ function shortSession(key) {
 
 function renderTable(flashIds = null) {
   const rows = filteredRuns();
+  renderModelPricingList();
   const tbody = document.getElementById('run-tbody');
   const noRuns = document.getElementById('no-runs');
   document.getElementById('run-count').textContent = rows.length + ' runs';
